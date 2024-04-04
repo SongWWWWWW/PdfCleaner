@@ -11,6 +11,38 @@
 
 """
 
+"""
+pdf:
+1:
+Table 1: Diffusion training strategies comparison
+<re.Match object; span=(73, 122), match='Table 1: Diffusion training strategies comparison>
+Table 2: Segmentation performance comparison to non-diffusion models
+<re.Match object; span=(557, 625), match='Table 2: Segmentation performance comparison to n>
+Table 3: Diffusion with different number of sampling steps
+<re.Match object; span=(10, 68), match='Table 3: Diffusion with different number of sampl>
+Table 4: Diffusion model performance across different inference seeds
+<re.Match object; span=(686, 755), match='Table 4: Diffusion model performance across diffe>
+Table 5: Segmentation performance without Transformer
+<re.Match object; span=(1220, 1273), match='Table 5: Segmentation performance without Transfo>
+Table 6: Training Hyper-parameters
+<re.Match object; span=(1285, 1319), match='Table 6: Training Hyper-parameters'>
+Table 7: Network Size
+<re.Match object; span=(758, 779), match='Table 7: Network Size'>
+Table 8: Per class Dice score comparison
+<re.Match object; span=(73, 113), match='Table 8: Per class Dice score comparison'>
+Table 9: Per class Hausdorff distance comparison “No diff
+<re.Match object; span=(73, 130), match='Table 9: Per class Hausdorff distance comparison >
+Table 10: Diffusion with different training variance schedule
+<re.Match object; span=(31, 92), match='Table 10: Diffusion with different training varia>
+2:
+
+3:
+
+4:
+
+
+"""
+
 
 
 

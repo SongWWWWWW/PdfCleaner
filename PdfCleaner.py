@@ -1,24 +1,30 @@
 import fitz # pyMuPDF里面的fitz包，不要与pip install fitz混淆
 from rapidocr_onnxruntime import RapidOCR
 import numpy as np
-from typing import List,Tuple
+from typing import List,Tuple,Optional
 import tqdm
 import re
 RECOGNIZE_SENTENCE_LEN = 50
 NUM_PERCENT = 0.6
 class PaperCleaner:
-    def __init__(self,path: str) -> None:
-        self.RECOGNIZE_SENTENCE_LEN = 50 #识别句子的长度
+    def __init__(self,path: str,debug=None) -> None:
+        self.RECOGNIZE_SENTENCE_LEN = 40 #识别句子的长度,找表格描述时小于这个长度被认为是疑似表格内容
         self.paper_path = path # pdf的path
-        self.NUM_PERCENT = 0.6 # 句子被认为是表格内容的数字比例
+        self.NUM_PERCENT = 0.4 # 句子被认为是表格内容的数字比例
         self.text :List[str] = None # paper原文本内容
         self.cleaned_text: List[str]=None # 删除table内容后的文本内容
+        self.paper_table_type = 0
+        self.debug = debug
+        self.MINI_LINES = 10 # 超短句子，被认为是表格的内容
         self.read()
+        self.find_matches()
         self.clean_table_context()
     def read(self) -> None:
         """
         读取paper的内容，返回List[str]
         """
+        pattern1 = r'Table (\d+): .+?(?=\.|\s*\n)'
+        pattern2 = r'Table (\d+)\. .+?(?=\.|\s*\n)'
         doc = fitz.open(self.paper_path)
         self.text = [""]*doc.page_count
         self.cleaned_text = [""]*doc.page_count
@@ -28,17 +34,45 @@ class PaperCleaner:
             b_unit.set_description("PaperPDFLoader context page index: {}".format(i))
             b_unit.refresh()
             text = page.get_text("")
-            # 清除latex的公式内容
             cleaned_text = re.sub(r'<latexit[^>]*>(.*?)</latexit>', '', text, flags=re.DOTALL | re.IGNORECASE)
-            self.text[i] = cleaned_text + "\n"
-            # 识别表格内容并进行清除 pass
+            # 第一页页脚不在最后
+            if i != 0:
+                self.text[i] = self.clean_page_num(cleaned_text)
+            else:
+                self.text[i] = cleaned_text
+            # 判断一下paper的table标题的匹配模式
+            if not self.paper_table_type:
+                matches = list(re.finditer(pattern1,self.text[i]))
+                if matches:
+                    self.paper_table_type = 1
+                else: 
+                    matches = list(re.finditer(pattern2,self.text[i]))
+                    if matches and not self.paper_table_type:
+                        self.paper_table_type = 2
             b_unit.update(1)
         print(f"Paper path: {self.paper_path} has already been read")
+    def clean_page_num(self,text:str):
+        """
+        清除页脚
+        """
+        log = 0
+        pos = 0
+        # print(repr(text[len(text)-70:]))
+        for index, chara in enumerate(text):
+            if text[len(text)-1-index] >= '0' and text[len(text)-1-index] <= '9' :
+                log = 1
+                # print(text[len(text)-1-index])
+            if log and text[len(text)-1-index] == '\n':
+                pos = len(text) - 1 - index
+                # print(repr(text[pos-8:pos+4]))
+                break
+        return text[:pos]
+
+
     def find_matches(self) -> None:
         """
         调试函数，用来查看匹配的table
         """
-        log_pattern = 0
         #  两种匹配模式
         # 第一种：Table 3: Experimental results on the DOTA dataset compared with state-of-the-art methods.
         # 第二种：Table 3. Experimental results on the DOTA dataset compared with state-of-the-art methods.
@@ -46,34 +80,70 @@ class PaperCleaner:
         pattern2 = r'Table (\d+)\. .+?(?=\.|\s*\n)'
         print("="*100)
         for text in self.text:
-            matches = list(re.finditer(pattern1, text))
-            print(matches)
-            if not matches:
-                matches = re.finditer(pattern2, text)
-                # print("pattern2 开始匹配")
+            if self.paper_table_type == 1:
+                matches = list(re.finditer(pattern1,text))
+            else:
+                matches = list(re.finditer(pattern2,text))
             for match in matches:
                 print(match.group())  # 打印匹配的文本
                 print(match)
         print("="*100)
+    def is_num(self,c:str):
+        if len(c) == 1:
+            if c >= '0' and c <= '9':
+                return True
+        return False
     def design_excel_content(self,text:str) -> bool:
+            num = 0
+            if not text:
+                return False
+            for index,i in enumerate(text):
+                if self.is_num(i):
+                    num += 1
+                if i == "." :
+                    if index + 1 <= len(text) - 1:
+                        if self.is_num(text[index-1]) and self.is_num(text[index+1]):
+                            num += 2
+                        else:
+                            num += 1
+                if i == '±' or i == "≤" or i == '≥': # 给权重
+                    num += 2
+            num_line = 0
+            chunk = text.split("\n")
+            for k in chunk:
+                if self.is_num_line(k):
+                    num_line += 1
+            # print(num/len(text))
+            # print(num_line/len(chunk))
+            if num/len(text) >=  0.4 or num_line/len(chunk) >= 0.4:
+                return True
+            return False
+    def is_num_line(self,text:str):
         num = 0
         if not text:
             return False
         for i in text:
-            if i>='0' or i<='9':
+            if self.is_num(i) or i == '–'or i == '-' or i == '±' or i == '≤' or i == '≥' or i == '.':
                 num += 1
-        if num/len(text) > NUM_PERCENT:
+        if num / len(text) >= 0.6:
             return True
         return False
     def find_row_low_50_next(self,text:str) -> int:
         """
-        text: 从0位置开始，找到小于长度50且数字多的行开始。
+        text: 传入text 
+        从0位置开始，找到小于长度50且数字多的行开始。
+        或者长度小于10的行
 
         """
         matches = re.finditer(r'\A.{0,49}\Z',text)
         for match in matches:
-            if design_excel_content(text[match.start(),match.end()]):
-
+            if self.design_excel_content(text[match.start(),match.end()]):
+                if self.debug:
+                    print(f"\n\033[31m表格内容：数字多开始,{match.group}\033[0m\n")
+                return match.start()
+            elif len(match.group) < self.MINI_LINES:
+                if self.debug:
+                    print(f"\033[31m长度短{match.group}\033[0m")
                 return match.start()
         return len(text)-1
     def find_row_over_50_next(self,text:str) -> int:
@@ -83,18 +153,48 @@ class PaperCleaner:
         int：返回大于50的非数字行的首字母的位置
         
         """
-        pos = find_row_low_50_next(text)
-        for match in re.finditer(r'^(.{51,})\n', text[pos:], re.DOTALL):
-            if not design_excel_content(match):
-                if match.start() > 0:
-                    return match.start()
-        return len(text)-1
+        # pos = self.find_row_low_50_next(text)
+        # for match in re.finditer(r'^(.{51,})\n', text[pos:], re.DOTALL):
+        #     if not self.design_excel_content(match):
+        #         if match.start() > 0:
+        #             print(f"\033[31m匹配到了{match.group}\033[0m")
+
+        #             return match.start() + pos
+        # return len(text)-1
+        next_line_start = 0
+        lines = text[next_line_start:].split("\n")
+        table_position_start = 0
+        table_position_end = 0
+        if self.debug:
+            print(">"*100)
+        for index,line in enumerate(lines):
+            if self.debug:
+                print(line)
+            if len(line) >= self.RECOGNIZE_SENTENCE_LEN and not self.design_excel_content(line):
+                if self.debug:
+                    print("ok了，准备撤退")
+                break
+            else:
+                if self.debug:
+                    print("不是")
+                table_position_end += len(line) + 1
+        if self.debug:
+            print("<"*100)
+        ###################################测试代码#################################
+        if self.debug:
+            print("\033[31m\033>>>>find_line_is_table_content测试信息----------------开始-------\033[0m\033[0m")
+            print("\033[31m\033[1m找到的text table 内容 \033[0m\033[0m")
+            print(text[table_position_start:table_position_end])
+            print("\033[31m\033<<<<find_line_is_table_content测试信息----------------结束-------\033[0m\033[0m")
+        ############################################################################
+
+        return table_position_end
     def design_without_other_word(self,text:str) -> bool:
         """
         判断text之后在\n之前有无字符
         """
         for i in text:
-            if i == ' ':
+            if i == ' ' or i == '.':
                 continue
             elif i != '\n':
                 return False
@@ -116,27 +216,60 @@ class PaperCleaner:
         table_position_start = next_line_start
         table_position_end = next_line_start
         transfer_travel = 0
+        if self.debug:
+            print(">"*100)
         for index,line in enumerate(lines):
+            if self.debug:
+                print(line)
             if not transfer_travel:
+                # 找start，从第一个小于设定长度的句子开始
                 if len(line) < self.RECOGNIZE_SENTENCE_LEN:
                     if line:
                         if line[-1] == '.':
-                            table_position_start += len(line)
-                            table_position_end += len(line)
+                            table_position_start += len(line) + 1
+                            table_position_end += len(line) + 1
                             transfer_travel = 1
+                            if self.debug:
+                                print("找到.了，OK了") # 测试函数
                             continue
-                        elif lines[index-1][:-1] == '.':
+                        elif index > 0 and lines[index-1][-1] == '.':
                             transfer_travel = 1
-                            table_position_end += len(line)
+                            table_position_end += len(line) + 1
+                            if self.debug:
+                                print("上一行最后是.")
                             continue
+                        elif len(line) < self.MINI_LINES:
+                            transfer_travel = 1
+                            table_position_end += len(line) + 1
+                            if self.debug:
+                                print("这一行很短，鉴定为表格内容")
+                            continue
+                    else:
+                        table_position_end += 1
+                        table_position_start += 1
 
-                table_position_start += len(line)
-                table_position_end += len(line)
+                table_position_start += len(line) + 1
+                table_position_end += len(line) + 1
             else:
-                if len(line) > self.RECOGNIZE_SENTENCE_LEN and not design_excel_content(line):
+                # 找end，从第一个
+                if len(line) >= self.RECOGNIZE_SENTENCE_LEN and not self.design_excel_content(line):
+                    if self.debug:
+                        print("ok了，准备撤退")
                     break
                 else:
-                    table_position_end += len(line)
+                    if self.debug:
+                        print("不是")
+                    table_position_end += len(line) + 1
+        if self.debug:
+            print("<"*100)
+        ###################################测试代码#################################
+        if self.debug:
+            print("\033[31m\033>>>>find_line_is_table_content测试信息----------------开始-------\033[0m\033[0m")
+            print("\033[31m\033[1m找到的text table 内容 \033[0m\033[0m")
+            print(text[table_position_start:table_position_end])
+            print("\033[31m\033<<<<find_line_is_table_content测试信息----------------结束-------\033[0m\033[0m")
+        ############################################################################
+
         return table_position_start,table_position_end        
     def cut_table_str(self,text:str,pos:int) -> str:
         """
@@ -147,18 +280,24 @@ class PaperCleaner:
         new_text = text
         table_start = 0
         table_end = 0
-        if not self.design_without_other_word(text[pos:]): # 判断table这一行之后还有没有内容
-            table_start,table_end = self.find_line_is_table_content(text[pos:]) # 将标题的内容隔过去
-        else:
-            # table_start = pos
-            table_end = self.find_row_over_50_next(text[pos:])
+        # if not self.design_without_other_word(text[pos:]): # 判断table这一行之后还有没有内容
+        #     table_start,table_end = self.find_line_is_table_content(text[pos:]) # 将标题的内容隔过去，找到tabel的前和后
+        # else:
+        #     # table_start = pos
+        #     # table 这一行之后没有其他word，从下一行开始，找到长度小于设定长度且数字多的行
+        #     # 或者找到行长度极其小的行
+        #     table_end = self.find_row_over_50_next(text[pos:])
+        table_start,table_end = self.find_line_is_table_content(text[pos:]) # 将标题的内容隔过去，找到tabel的前和后
+        
             
         if self.design_excel_content(text[pos+table_start:pos+table_end]):
             return text[:pos+table_start] + text[pos+table_end:]
         else:
             print("\033[31m\033[1m error, 切除部分是非表格内容\033[0m\033[0m")
             print("-"*100)
-            print(f"\033[34m{text[pos+table_start:table_end]}\033[0m")
+            print(f"<<<<<<<<<<<<<<位置{pos+table_start}-{pos+table_end}>>>>>>>>>>>>>>>>>>>")
+            print("--------------切除内容开始--------------")
+            print(f"\033[34m{text[pos+table_start:pos+table_end]}\033[0m")
             print("-"*100)
         return new_text 
     def recognize_table(self,text:str) ->str:
@@ -168,10 +307,20 @@ class PaperCleaner:
         """
         pattern1 = r'Table (\d+): .+?(?=\.|\s*\n)'
         pattern2 = r'Table (\d+)\. .+?(?=\.|\s*\n)'
-
-        matches = list(re.finditer(pattern1, text))
-        if not matches:
-            matches = list(re.finditer(pattern2, text))
+        # 在没有确定类型的时候，根据第一个匹配的table的类型类确定是哪种pattern
+        if not self.paper_table_type:
+            matches = list(re.finditer(pattern1, text))
+            if matches:
+                self.paper_table_type = 1
+            else:
+                matches = list(re.finditer(pattern2, text))
+                if not self.paper_table_type and matches:
+                        self.paper_table_type = 2
+        else:
+            if self.paper_table_type == 1:
+                matches = list(re.finditer(pattern1, text))
+            else:
+                matches = list(re.finditer(pattern2, text))
         if not matches:  
             return text
         else:
@@ -190,6 +339,8 @@ class PaperCleaner:
     def clean_table_context(self) -> None:
         for index,text in enumerate(self.text):
             self.cleaned_text[index] = self.recognize_table(text)
+            if self.debug:
+                print(self.text[index])
         
 
 
@@ -333,21 +484,8 @@ def find_matches(text:str) -> int:
         #  print(text[match.start():match.end()])
     print("="*100)
 if __name__ == "__main__": 
-    # file_path = './1.pdf'
-    # files = pdf_page_2text(file_path)
-    # text = ""
-    # for file in files:
-    #     # print(file)
-    #     text += file 
-    # find_matches(text)
-    # with open("log.txt","w") as f:
-    #     for i in files:
-    #         # print("-=-="*50)
-    #         # print(repr(i))
-    #         print(i)
-    #         f.write(i)
-    #     f.close()
-    files = PaperCleaner("./4.pdf")
+
+    files = PaperCleaner("./5.pdf")
     for text in files.cleaned_text:
         print(text)
 

@@ -1,64 +1,4 @@
 text = """
-Table 1: CIFAR10 results. NLL measured in bits/dim.
-Model
-IS
-FID
-NLL Test (Train)
-Conditional
-EBM [11]
-8.30
-37.9
-JEM [17]
-8.76
-38.4
-BigGAN [3]
-9.22
-14.73
-StyleGAN2 + ADA (v1) [29]
-10.06
-2.67
-Unconditional
-Diffusion (original) [53]
-≤ 5.40
-Gated PixelCNN [59]
-4.60
-65.93
-3.03 (2.90)
-Sparse Transformer [7]
-2.80
-PixelIQN [43]
-5.29
-49.46
-EBM [11]
-6.78
-38.2
-NCSNv2 [56]
-31.75
-NCSN [55]
-8.87±0.12
-25.32
-SNGAN [39]
-8.22±0.05
-21.7
-SNGAN-DDLS [4]
-9.09±0.10
-15.42
-StyleGAN2 + ADA (v1) [29]
-9.74 ± 0.05
-3.26
-Ours (L, ﬁxed isotropic Σ)
-7.67±0.13
-13.51
-≤ 3.70 (3.69)
-Ours (Lsimple)
-9.46±0.11
-3.17
-≤ 3.75 (3.72)
-Table 2: Unconditional CIFAR10 reverse
-process parameterization and training objec-
-tive ablation. Blank entries were unstable to
-train and generated poor samples with out-of-
-range scores.
 Objective
 IS
 FID
@@ -82,11 +22,47 @@ L, ﬁxed isotropic Σ
 ∥˜ϵ − ϵθ∥2 (Lsimple)
 9.46±0.11
 3.17
-
 """
+def is_num(c:str):
+    if len(c) == 1:
+        if c >= '0' and c <= '9':
+            return True
+    return False
 num = 0
-for i in text:
-    if i == '\n':
-        num += 1
-
-print(num)
+def design_excel_content(text:str) -> bool:
+        num = 0
+        if not text:
+            return False
+        for index,i in enumerate(text):
+            if is_num(i):
+                num += 1
+            if i == "." :
+                if index + 1 <= len(text) - 1:
+                    if is_num(text[index-1]) and is_num(text[index+1]):
+                        num += 2
+                    else:
+                        num += 1
+            if i == '±' or i == "≤" or i == '≥': # 给权重
+                num += 2
+        num_line = 0
+        chunk = text.split("\n")
+        for k in chunk:
+            if is_num_line(k):
+                num_line += 1
+        print(num/len(text))
+        print(num_line/len(chunk))
+        if num/len(text) >=  0.4 or num_line/len(chunk) >= 0.4:
+            
+            return True
+        return False
+def is_num_line(text:str):
+    num = 0
+    if not text:
+        return False
+    for i in text:
+        if is_num(i) or i == '–'or i == '-' or i == '±' or i == '≤' or i == '≥' or i == '.':
+            num += 1
+    if num / len(text) >= 0.6:
+        return True
+    return False
+print(design_excel_content(text))
