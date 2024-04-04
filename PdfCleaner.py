@@ -13,7 +13,8 @@ class PaperCleaner:
         self.NUM_PERCENT = 0.4 # 句子被认为是表格内容的数字比例
         self.text :List[str] = None # paper原文本内容
         self.cleaned_text: List[str]=None # 删除table内容后的文本内容
-        self.paper_table_type = 0
+        self.paper_table_name_type = 0 # 用来解决table的name的匹配问题
+        self.paper_table_position_type = 0 # 用来解决table的内容的位置问题，0：在下方，1：在上方
         self.debug = debug
         self.MINI_LINES = 10 # 超短句子，被认为是表格的内容
         self.read()
@@ -40,17 +41,51 @@ class PaperCleaner:
                 self.text[i] = self.clean_page_num(cleaned_text)
             else:
                 self.text[i] = cleaned_text
-            # 判断一下paper的table标题的匹配模式
-            if not self.paper_table_type:
+            # 判断一下paper的table标题的匹配模式 和 table的位置
+            if not self.paper_table_name_type:
                 matches = list(re.finditer(pattern1,self.text[i]))
                 if matches:
-                    self.paper_table_type = 1
+                    self.paper_table_name_type = 1
+                    self.seek_table_content_position(self.text[i],matches[0].start())
                 else: 
                     matches = list(re.finditer(pattern2,self.text[i]))
-                    if matches and not self.paper_table_type:
-                        self.paper_table_type = 2
+                    if matches and not self.paper_table_name_type:
+                        self.paper_table_name_type = 2
+                        self.seek_table_content_position(self.text[i],matches[0].start())
+
             b_unit.update(1)
         print(f"Paper path: {self.paper_path} has already been read")
+    def seek_table_content_position(self,text:str,head:int):
+        """
+        通过pos位置的上下文，来确定paper的表格内容的位置，先从上面找，如果找不到
+        就再从下面找
+        """
+        if not text:
+            return 
+        # print(head,type(head))
+        head_lines = text[:head].splitlines(keepends=True) # 保留换行符
+        head_lines.reverse()
+        reverse_text = ""
+        for line in head_lines: # 反转查询
+            if len(line) > self.RECOGNIZE_SENTENCE_LEN:
+                break
+            else:
+                reverse_text += line
+        if self.design_table_content(reverse_text):
+            # print(reverse_text)
+            self.paper_table_position_type = 1
+            if self.debug:
+                print("\033[31m表格在上面\033[0m")
+            return 
+        table_start,table_end =self.find_line_is_table_content(text[head:])
+        if self.design_table_content(text[head+table_start:head+table_end]):
+            self.paper_table_position_type = 0
+            if self.debug:
+                print("\033[31m表格在下面\033[0m")
+            return 
+        print("\033[31m没有找到table的内容的位置\033[0m")
+
+
     def clean_page_num(self,text:str):
         """
         清除页脚
@@ -80,7 +115,7 @@ class PaperCleaner:
         pattern2 = r'Table (\d+)\. .+?(?=\.|\s*\n)'
         print("="*100)
         for text in self.text:
-            if self.paper_table_type == 1:
+            if self.paper_table_name_type == 1:
                 matches = list(re.finditer(pattern1,text))
             else:
                 matches = list(re.finditer(pattern2,text))
@@ -93,37 +128,44 @@ class PaperCleaner:
             if c >= '0' and c <= '9':
                 return True
         return False
-    def design_excel_content(self,text:str) -> bool:
-            num = 0
-            if not text:
-                return False
-            for index,i in enumerate(text):
-                if self.is_num(i):
-                    num += 1
-                if i == "." :
-                    if index + 1 <= len(text) - 1:
-                        if self.is_num(text[index-1]) and self.is_num(text[index+1]):
-                            num += 2
-                        else:
-                            num += 1
-                if i == '±' or i == "≤" or i == '≥': # 给权重
-                    num += 2
-            num_line = 0
-            chunk = text.split("\n")
-            for k in chunk:
-                if self.is_num_line(k):
-                    num_line += 1
-            # print(num/len(text))
-            # print(num_line/len(chunk))
-            if num/len(text) >=  0.4 or num_line/len(chunk) >= 0.4:
-                return True
+    def design_table_content(self,text:str) -> bool:
+        """
+        1.用text的char的table类型占比得分来判断
+        2.用数字比例大的行的占比来判断
+        """
+        num = 0
+        if not text:
             return False
-    def is_num_line(self,text:str):
+        for index,i in enumerate(text):
+            if self.is_num(i):
+                num += 1
+            if i == "." :
+                if index + 1 <= len(text) - 1:
+                    if self.is_num(text[index-1]) and self.is_num(text[index+1]):
+                        num += 2
+                    else:
+                        num += 1
+            if i == '±' or i == "≤" or i == '≥': # 给权重
+                num += 2
+        num_line = 0
+        chunk = text.split("\n")
+        for k in chunk:
+            if self.is_table_line(k):
+                num_line += 1
+        # print(num/len(text))
+        # print(num_line/len(chunk))
+        if num/len(text) >=  0.4 or num_line/len(chunk) >= 0.4:
+            return True
+        return False
+    def is_table_line(self,text:str):
+        """
+        用text的table元素占比来判断是否是table的行
+        """
         num = 0
         if not text:
             return False
         for i in text:
-            if self.is_num(i) or i == '–'or i == '-' or i == '±' or i == '≤' or i == '≥' or i == '.':
+            if self.is_num(i) or i == '–'or i == '-' or i == '±' or i == '≤' or i == '≥' or i == '.' or i == '✓' or i == '✗':
                 num += 1
         if num / len(text) >= 0.6:
             return True
@@ -137,7 +179,7 @@ class PaperCleaner:
         """
         matches = re.finditer(r'\A.{0,49}\Z',text)
         for match in matches:
-            if self.design_excel_content(text[match.start(),match.end()]):
+            if self.design_table_content(text[match.start(),match.end()]):
                 if self.debug:
                     print(f"\n\033[31m表格内容：数字多开始,{match.group}\033[0m\n")
                 return match.start()
@@ -170,7 +212,7 @@ class PaperCleaner:
         for index,line in enumerate(lines):
             if self.debug:
                 print(line)
-            if len(line) >= self.RECOGNIZE_SENTENCE_LEN and not self.design_excel_content(line):
+            if len(line) >= self.RECOGNIZE_SENTENCE_LEN and not self.design_table_content(line):
                 if self.debug:
                     print("ok了，准备撤退")
                 break
@@ -252,7 +294,7 @@ class PaperCleaner:
                 table_position_end += len(line) + 1
             else:
                 # 找end，从第一个
-                if len(line) >= self.RECOGNIZE_SENTENCE_LEN and not self.design_excel_content(line):
+                if len(line) >= self.RECOGNIZE_SENTENCE_LEN and not self.design_table_content(line):
                     if self.debug:
                         print("ok了，准备撤退")
                     break
@@ -290,7 +332,7 @@ class PaperCleaner:
         table_start,table_end = self.find_line_is_table_content(text[pos:]) # 将标题的内容隔过去，找到tabel的前和后
         
             
-        if self.design_excel_content(text[pos+table_start:pos+table_end]):
+        if self.design_table_content(text[pos+table_start:pos+table_end]):
             return text[:pos+table_start] + text[pos+table_end:]
         else:
             print("\033[31m\033[1m error, 切除部分是非表格内容\033[0m\033[0m")
@@ -308,16 +350,16 @@ class PaperCleaner:
         pattern1 = r'Table (\d+): .+?(?=\.|\s*\n)'
         pattern2 = r'Table (\d+)\. .+?(?=\.|\s*\n)'
         # 在没有确定类型的时候，根据第一个匹配的table的类型类确定是哪种pattern
-        if not self.paper_table_type:
+        if not self.paper_table_name_type:
             matches = list(re.finditer(pattern1, text))
             if matches:
-                self.paper_table_type = 1
+                self.paper_table_name_type = 1
             else:
                 matches = list(re.finditer(pattern2, text))
-                if not self.paper_table_type and matches:
-                        self.paper_table_type = 2
+                if not self.paper_table_name_type and matches:
+                        self.paper_table_name_type = 2
         else:
-            if self.paper_table_type == 1:
+            if self.paper_table_name_type == 1:
                 matches = list(re.finditer(pattern1, text))
             else:
                 matches = list(re.finditer(pattern2, text))
@@ -327,21 +369,70 @@ class PaperCleaner:
             index_first = [] # 匹配的标题的首个字母的text中的位置
             index_end = [] # 匹配的标题的最后的字母的之后第一个text中的位置
             new_text = ""
-            for match in matches:
-                index_first.append(match.start())
-                index_end.append(match.end())
-            index_first.append(len(text)-1) # 这里为了顺应后面的cut操作，通过添加一个元素，能够用index_first将text的分成若干个区间
-            new_text += text[:index_first[0]] # 这里默认是table之后的内容是表格内容，之后会加入选择的情况
-            for i in range(len(index_end)):
-                new_text += self.cut_table_str(text[index_first[i]:index_first[i+1]],index_end[i]-index_first[i])
-                # 上面将index_first分开的区间作为text传给cut函数，并将传入的text的table的长度传进去
-            return new_text
+            if self.paper_table_position_type == 0:
+                for match in matches:
+                    index_first.append(match.start())
+                    index_end.append(match.end())
+                index_first.append(len(text)-1) # 这里为了顺应后面的cut操作，通过添加一个元素，能够用index_first将text的分成若干个区间
+                new_text += text[:index_first[0]] # 这里默认是table之后的内容是表格内容，之后会加入选择的情况
+                for i in range(len(index_end)):
+                    new_text += self.cut_table_str(text[index_first[i]:index_first[i+1]],index_end[i]-index_first[i])
+                    # 上面将index_first分开的区间作为text传给cut函数，并将传入的text的table的长度传进去
+                return new_text
+            elif self.paper_table_position_type == 1:
+                index_end.append(0)
+                for match in matches:
+                    index_first.append(match.start())
+                    index_end.append(match.end())
+                for i in range(len(index_first)):
+                    new_text += self.cut_table_str_before(text[index_end[i]:index_first[i]]) if  self.cut_table_str_before(text[index_end[i]:index_first[i]]) is not None else ""
+                    new_text += text[index_first[i]:index_end[i+1]]
+                new_text += text[index_end[-1]:]
+                return new_text
+    def cut_table_str_before(self,text:str) -> str:
+        text = text.splitlines(keepends=True)
+        num_table_line = 0
+        table_text = ""
+        for index in range(len(text)):
+            if len(text[len(text)-1-index]) > self.RECOGNIZE_SENTENCE_LEN:
+                if self.is_table_line(text[len(text)-1-index]):
+                    continue
+                else:
+                    num_table_line = len(text) -index
+                    break
+        if num_table_line > len(text) - 1:
+            print(f"\033[34m 表格在前,没有表格内容 \033[0m")
+            print(">"*100)
+            print(text)
+            print("<"*100)
+            no_table_text = ""
+            for line in text:
+                no_table_text += line
+            return no_table_text
+        for line in text[num_table_line:]:
+            # print("line")
+            # print(line)
+            table_text += line
+        
+        if self.design_table_content(table_text):
+            no_table_text = ""
+            for line in text[:num_table_line]:
+                no_table_text += line
+            return no_table_text
+        else:
+            print("\033[31m\033[1m error, 切除部分是非表格内容\033[0m\033[0m")
+            print("-"*100)
+            print(f"<<<<<<<<<<<<<<<<<>>><<<<>>>>>>>>>>>>>>>>>>>")
+            print("--------------切除内容开始--------------")
+            print(f"\033[34m{table_text}\033[0m")
+            print("-"*100)
     def clean_table_context(self) -> None:
         for index,text in enumerate(self.text):
             self.cleaned_text[index] = self.recognize_table(text)
             if self.debug:
                 print(self.text[index])
-        
+    # 下面是新的函数用来将表格内容在上方的情况解决
+
 
 
 def design_excel_content(text:str) -> bool:
@@ -485,7 +576,7 @@ def find_matches(text:str) -> int:
     print("="*100)
 if __name__ == "__main__": 
 
-    files = PaperCleaner("./5.pdf")
+    files = PaperCleaner("./3.pdf")
     for text in files.cleaned_text:
         print(text)
 
