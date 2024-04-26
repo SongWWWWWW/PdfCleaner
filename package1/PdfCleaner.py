@@ -1,23 +1,13 @@
-import os,sys
-sys.path.append(os.path.dirname(__file__))
 import fitz # pyMuPDF里面的fitz包，不要与pip install fitz混淆
 from rapidocr_onnxruntime import RapidOCR
 import numpy as np
 from typing import List,Tuple,Optional
 import tqdm
 import re
-from logger import Logger
 RECOGNIZE_SENTENCE_LEN = 50
 NUM_PERCENT = 0.6
-class TitleTree:
-    # 用单引号来包裹自身类作为参数传递，来解决无法将自身作为参数传递的问题
-    def __init__(self, value:List[int]=[], parent: 'TitleTree' =None) -> None:
-        self.value = value
-        self.parent = parent
-        self.sons : List[TitleTree] = []
-class PaperCleaner:
-    def __init__(self,path: str,debug=None) -> None:
-        self.logger = Logger().get_logger
+class PaperCleaner1:
+    def __init__(self,path: str,debug=None,clean= True) -> None:
         self.RECOGNIZE_SENTENCE_LEN = 40 #识别句子的长度,找表格描述时小于这个长度被认为是疑似表格内容
         self.paper_path = path # pdf的path
         self.NUM_PERCENT = 0.4 # 句子被认为是表格内容的数字比例
@@ -27,11 +17,10 @@ class PaperCleaner:
         self.paper_table_position_type = 0 # 用来解决table的内容的位置问题，0：在下方，1：在上方
         self.debug = debug
         self.MINI_LINES = 10 # 超短句子，被认为是表格的内容
-        self.title_pattern = None # 用于确定title的模式
-        self.title_tree = TitleTree(value=[])
         self.read()
         self.find_matches()
-        self.clean_table_context()
+        if clean:
+            self.clean_table_context()
     def read(self) -> None:
         """
         读取paper的内容，返回List[str]
@@ -87,18 +76,15 @@ class PaperCleaner:
             # print(reverse_text)
             self.paper_table_position_type = 1
             if self.debug:
-                # print("\033[31m表格在上面\033[0m")
-                self.logger.info("表格在上面")
+                print("\033[31m表格在上面\033[0m")
             return 
         table_start,table_end =self.find_line_is_table_content(text[head:])
         if self.design_table_content(text[head+table_start:head+table_end]):
             self.paper_table_position_type = 0
             if self.debug:
                 print("\033[31m表格在下面\033[0m")
-                self.logger.info("表格在下面")
             return 
-        # print("\033[31m没有找到table的内容的位置\033[0m")
-        self.logger.warning("没有找到表格的内容")
+        print("\033[31m没有找到table的内容的位置\033[0m")
 
 
     def clean_page_num(self,text:str):
@@ -108,21 +94,15 @@ class PaperCleaner:
         log = 0
         pos = 0
         # print(repr(text[len(text)-70:]))
-        # for index, chara in enumerate(text):
-        #     if text[len(text)-1-index] >= '0' and text[len(text)-1-index] <= '9' :
-        #         log = 1
-        #         # print(text[len(text)-1-index])
-        #     if log and text[len(text)-1-index] == '\n':
-        #         pos = len(text) - 1 - index
-        #         # print(repr(text[pos-8:pos+4]))
-        #         break
-        if self.is_num(text[len(text)-1]):
-            log += 1
-        if self.is_num(text[len(text)-2]):
-            log += 1
-        if self.is_num(text[len(text)-3]):
-            log += 1
-        return text[:len(text)-log]
+        for index, chara in enumerate(text):
+            if text[len(text)-1-index] >= '0' and text[len(text)-1-index] <= '9' :
+                log = 1
+                # print(text[len(text)-1-index])
+            if log and text[len(text)-1-index] == '\n':
+                pos = len(text) - 1 - index
+                # print(repr(text[pos-8:pos+4]))
+                break
+        return text[:pos]
 
 
     def find_matches(self) -> None:
@@ -202,13 +182,11 @@ class PaperCleaner:
         for match in matches:
             if self.design_table_content(text[match.start(),match.end()]):
                 if self.debug:
-                    # print(f"\n\033[31m表格内容：数字多开始,{match.group}\033[0m\n")
-                    self.logger.info("表格内容：数字多开始")
+                    print(f"\n\033[31m表格内容：数字多开始,{match.group}\033[0m\n")
                 return match.start()
             elif len(match.group) < self.MINI_LINES:
                 if self.debug:
-                    # print(f"\033[31m长度短{match.group}\033[0m")
-                    self.logger.warning(f"长度短，{match.group}")
+                    print(f"\033[31m长度短{match.group}\033[0m")
                 return match.start()
         return len(text)-1
     def find_row_over_50_next(self,text:str) -> int:
@@ -230,30 +208,27 @@ class PaperCleaner:
         lines = text[next_line_start:].split("\n")
         table_position_start = 0
         table_position_end = 0
-        # if self.debug:
-        #     print(">"*100)
+        if self.debug:
+            print(">"*100)
         for index,line in enumerate(lines):
             if self.debug:
                 print(line)
             if len(line) >= self.RECOGNIZE_SENTENCE_LEN and not self.design_table_content(line):
                 if self.debug:
-                    # print("ok了，准备撤退")
-                    self.logger.info("ok了，准备撤退")
+                    print("ok了，准备撤退")
                 break
             else:
                 if self.debug:
-                    # print("不是")
-                    self.logger.info("不是")
+                    print("不是")
                 table_position_end += len(line) + 1
-        # if self.debug:
-            # print("<"*100)
+        if self.debug:
+            print("<"*100)
         ###################################测试代码#################################
         if self.debug:
-        #     print("\033[31m\033>>>>find_line_is_table_content测试信息----------------开始-------\033[0m\033[0m")
-        #     print("\033[31m\033[1m找到的text table 内容 \033[0m\033[0m")
-        #     print(text[table_position_start:table_position_end])
-        #     print("\033[31m\033<<<<find_line_is_table_content测试信息----------------结束-------\033[0m\033[0m")
-            self.logger.info(f"找到的text table 内容,{text[table_position_start:table_position_end]}")
+            print("\033[31m\033>>>>find_line_is_table_content测试信息----------------开始-------\033[0m\033[0m")
+            print("\033[31m\033[1m找到的text table 内容 \033[0m\033[0m")
+            print(text[table_position_start:table_position_end])
+            print("\033[31m\033<<<<find_line_is_table_content测试信息----------------结束-------\033[0m\033[0m")
         ############################################################################
 
         return table_position_end
@@ -298,22 +273,19 @@ class PaperCleaner:
                             table_position_end += len(line) + 1
                             transfer_travel = 1
                             if self.debug:
-                                # print("找到.了，OK了") # 测试函数
-                                self.logger.info("找到了，ok")
+                                print("找到.了，OK了") # 测试函数
                             continue
                         elif index > 0 and lines[index-1][-1] == '.':
                             transfer_travel = 1
                             table_position_end += len(line) + 1
                             if self.debug:
-                                # print("上一行最后是.")
-                                self.logger.info("上一行最后是.")
+                                print("上一行最后是.")
                             continue
                         elif len(line) < self.MINI_LINES:
                             transfer_travel = 1
                             table_position_end += len(line) + 1
                             if self.debug:
-                                # print("这一行很短，鉴定为表格内容")
-                                self.logger.info("上一行最后是.")
+                                print("这一行很短，鉴定为表格内容")
                             continue
                     else:
                         table_position_end += 1
@@ -325,23 +297,20 @@ class PaperCleaner:
                 # 找end，从第一个
                 if len(line) >= self.RECOGNIZE_SENTENCE_LEN and not self.design_table_content(line):
                     if self.debug:
-                        # print("ok了，准备撤退")
-                        self.logger.info("ok了，准备撤退")
+                        print("ok了，准备撤退")
                     break
                 else:
                     if self.debug:
-                        # print("不是")
-                        self.logger.info("不是")
+                        print("不是")
                     table_position_end += len(line) + 1
-        # if self.debug:
-        #     print("<"*100)
+        if self.debug:
+            print("<"*100)
         ###################################测试代码#################################
         if self.debug:
-            # print("\033[31m\033>>>>find_line_is_table_content测试信息----------------开始-------\033[0m\033[0m")
-            # print("\033[31m\033[1m找到的text table 内容 \033[0m\033[0m")
-            # print(text[table_position_start:table_position_end])
-            # print("\033[31m\033<<<<find_line_is_table_content测试信息----------------结束-------\033[0m\033[0m")
-            self.logger.info(f"找到的text table内容,{text[table_position_start:table_position_end]}")
+            print("\033[31m\033>>>>find_line_is_table_content测试信息----------------开始-------\033[0m\033[0m")
+            print("\033[31m\033[1m找到的text table 内容 \033[0m\033[0m")
+            print(text[table_position_start:table_position_end])
+            print("\033[31m\033<<<<find_line_is_table_content测试信息----------------结束-------\033[0m\033[0m")
         ############################################################################
 
         return table_position_start,table_position_end        
@@ -367,13 +336,12 @@ class PaperCleaner:
         if self.design_table_content(text[pos+table_start:pos+table_end]):
             return text[:pos+table_start] + text[pos+table_end:]
         else:
-            # print("\033[31m\033[1m error, 切除部分是非表格内容\033[0m\033[0m")
-            # print("-"*100)
-            # print(f"<<<<<<<<<<<<<<位置{pos+table_start}-{pos+table_end}>>>>>>>>>>>>>>>>>>>")
-            # print("--------------切除内容开始--------------")
-            # print(f"\033[34m{text[pos+table_start:pos+table_end]}\033[0m")
-            # print("-"*100)
-            self.logger.error(f"切除部分是非表格内容: {text[pos+table_start:pos+table_end]}")
+            print("\033[31m\033[1m error, 切除部分是非表格内容\033[0m\033[0m")
+            print("-"*100)
+            print(f"<<<<<<<<<<<<<<位置{pos+table_start}-{pos+table_end}>>>>>>>>>>>>>>>>>>>")
+            print("--------------切除内容开始--------------")
+            print(f"\033[34m{text[pos+table_start:pos+table_end]}\033[0m")
+            print("-"*100)
         return new_text 
     def recognize_table(self,text:str) ->str:
 
@@ -434,11 +402,10 @@ class PaperCleaner:
                     num_table_line = len(text) -index
                     break
         if num_table_line > len(text) - 1:
-            # print(f"\033[34m 表格在前,没有表格内容 \033[0m")
-            # print(">"*100)
-            # print(text)
-            # print("<"*100)
-            self.logger.warning(f"表格在前，没有表格内容 {text}")
+            print(f"\033[34m 表格在前,没有表格内容 \033[0m")
+            print(">"*100)
+            print(text)
+            print("<"*100)
             no_table_text = ""
             for line in text:
                 no_table_text += line
@@ -454,256 +421,17 @@ class PaperCleaner:
                 no_table_text += line
             return no_table_text
         else:
-            # print("\033[31m\033[1m error, 切除部分是非表格内容\033[0m\033[0m")
-            # print("-"*100)
-            # print(f"<<<<<<<<<<<<<<<<<>>><<<<>>>>>>>>>>>>>>>>>>>")
-            # print("--------------切除内容开始--------------")
-            # print(f"\033[34m{table_text}\033[0m")
-            # print("-"*100)
-            self.logger.warning(f"切除部分是非表格部分，停止切除{table_text}")
+            print("\033[31m\033[1m error, 切除部分是非表格内容\033[0m\033[0m")
+            print("-"*100)
+            print(f"<<<<<<<<<<<<<<<<<>>><<<<>>>>>>>>>>>>>>>>>>>")
+            print("--------------切除内容开始--------------")
+            print(f"\033[34m{table_text}\033[0m")
+            print("-"*100)
     def clean_table_context(self) -> None:
         for index,text in enumerate(self.text):
             self.cleaned_text[index] = self.recognize_table(text)
             if self.debug:
                 print(self.text[index])
-    def list_to_str(self,L:List[str]) -> str :
-        output = ""
-        for i in L:
-            output += str(i) + '.'
-        return output[:-1]
-    def design_en_or_space_1(self,text:str) -> bool:
-        # 只有英文和空格,-,()，True
-        log = 0
-        for i in text:
-            if log == 0 or log == 1:
-                if i == ' ':
-                    log = 2
-                    continue
-                if self.is_num(i) and log == 0:
-                    log = 1
-                elif i=='.' and log == 1:
-                    log = 0
-                else:
-                    # self.logger.error(f"{text} 在 {i} 处没通过")
-                    return False
-            else:
-                if i>='a' and i<='z' or i>='A' and i <='Z' or i==' ' or i == '-' or i == '(' or i == ')' or self.is_num(i):
-                    log += 1
-                    pass
-                else:
-                    # self.logger.error(f"{text} 在 {i} 处没通过")
-                    return False
-        if log >= 5:
-            return True
-        return False
-    def design_en_or_space_2(self,text:str) -> bool:
-        # 只有英文和空格,-,()，True
-        log = 0
-        for i in text:
-            if i>='a' and i<='z' or i>='A' and i <='Z' or i==' ' or i == '-' or i == '(' or i == ')' or self.is_num(i):
-                log += 1
-            else:
-                # self.logger.error(f"{text} 在 {i} 处没通过")
-                return False
-        if log >= 5:
-            return True
-        return False
-    def search_title(self):
-        # 先查找Abstract，然后找到Introduction的样式，根据Introduction的样式查找
-        # Introduction样式
-        # 1. Introduction
-        # 3. Method
-        # 3.1. Rotate the convolution kernels
-        # 3.2. Routing function
-        # 3.3. Adaptive rotated convolution module
-
-        # 3. Background
-        # 3.1 Denoising Diffusion Probabilistic Model
-        
-        # 1
-        # Introduction
-
-        # 判断逻辑，每行第一个是数字，根据标题树，判断属于兄弟节点还是父兄弟节点递归往上判断，或者给一个队列，把现在和下一个大标题的数字放进来
-        # 俩都进行判断， 然后匹配以后之后插入树节点，在第一个空格之后逐个元素判断，只能是英文字母或者空格，匹配的话，记录下来，然后打上标记（放到一行），在进行删除表格操作的时候判断标题
-        # design
-        for index_text,text in enumerate(self.cleaned_text):
-            texts = text.split("\n")
-            if self.title_pattern is not None:
-                break
-            for index_i,i in enumerate(texts):
-                if "Introduction" in i:
-                    if self.is_num(i[0]):
-                        self.title_pattern = 1 # 1. Introduction
-                        # self.title_tree = TitleTree(value=[])
-                        self.title_tree.sons = [TitleTree(value=["1"],parent=self.title_tree)]
-                        self.title_tree = self.title_tree.sons[0]
-                        self.logger.info(f"paper标题模式确认，{i}")
-                        break
-                    elif self.is_num(texts[index_i-1][0]):
-                        self.title_pattern = 0
-                        # 1
-                        # Introduction
-                        self.title_tree.sons = [TitleTree(value=["1"],parent=self.title_tree)]
-                        self.title_tree = self.title_tree.sons[0]
-                        self.logger.info(f"paper标题模型确认，\n{texts[index_i-1]}\n{i}")
-                        break
-        if self.title_pattern is None:
-            self.logger.error("标题未找到")
-    def title_queue(self,title_node:TitleTree) -> List[int]:
-        # 生成当前步的查询列表, 将可变对象赋值个一个新的变量，这个变量被认为是可变对象的别名，
-        # 会和可变对象同步改变，用copy方法能够避免这种情况
-        if title_node.value == []:
-            name = []
-        else:
-             name = title_node.value.copy()
-        output = []
-        name.append(1)
-        output.append(name) # 子树
-
-        if title_node.parent:
-            name = title_node.value.copy()
-            name[-1] += 1
-            output.append(name) # 兄弟树
-            if title_node.parent.parent:
-                name = title_node.parent.value.copy()
-                name[-1] += 1
-                output.append(name) # 父兄树
-                # print(output)
-                if title_node.parent.parent.parent:
-                    name = title_node.parent.parent.value.copy()
-                    name[-1] += 1
-                    output.append(name) # 父父兄树
-        # print(output)
-        # self.logger.info(f"队列创建成功，{output}")
-        return output
-
-    def title_pattern_1(self):
-        # 匹配模式为 1. Introduction
-        # 从self.text中进行标记
-        queue = []
-        log = 1
-        # 遍历每页
-        for index,texts in enumerate(self.text):
-            texts = texts.split("\n")
-            self.text[index] = ""
-            # 遍历每行
-            for text in texts:
-                if text == "\n":
-                    continue
-                if queue == []:
-                    queue = self.title_queue(self.title_tree)
-                # 遍历每个可能的标题号
-                for i,lis in enumerate(queue):
-                    lis_to_str = self.list_to_str(lis)
-                    if lis_to_str in text:
-                        if self.design_en_or_space_1(text.strip(".")):
-                            self.text[index] += "#"*3 + text + "\n"
-                            log = 1
-                            queue = []
-                            self.logger.success(f"成功找到标题：{text}")
-                            if i == 0:
-                                # self.logger.info("i==0")
-                                if self.title_tree.value == []:
-                                    self.title_tree.sons = [TitleTree(value=[1],parent=self.title_tree)]
-                                else:
-                                    _list = self.title_tree.value.copy()
-                                    _list.append(1)
-                                    self.title_tree.sons = [TitleTree(value=_list,parent=self.title_tree)]
-                                self.title_tree = self.title_tree.sons[0]
-                                # self.logger.info(f"end {self.title_tree.value}")
-
-                            elif i == 1:
-                                # self.logger.info("i=1")
-                                _list = self.title_tree.value.copy()
-                                _list[-1] += 1
-                                self.title_tree.parent.sons.append(TitleTree(value=_list,parent=self.title_tree.parent))
-                                self.title_tree = self.title_tree.parent.sons[-1]
-                            elif i == 2:
-                                # self.logger.info("i=2")
-                                _list = self.title_tree.parent.value.copy()
-                                _list[-1] += 1
-                                self.title_tree.parent.parent.sons.append(TitleTree(value=_list,parent=self.title_tree.parent.parent))
-                                self.title_tree = self.title_tree.parent.parent.sons[-1]
-                            elif i == 3:
-                                # self.logger.info("i=3")
-                                _list = self.title_tree.parent.parent.value.copy()
-                                _list[-1] += 1
-                                self.title_tree.parent.parent.sons.append(TitleTree(value=_list,parent=self.title_tree.parent.parent.parent))
-                                self.title_tree = self.title_tree.parent.parent.parent.sons[-1]
-                            break
-                if log==0:
-                    self.text[index] += text + "\n"
-                else:
-                    log = 0
-
-    def title_pattern_2(self):
-            # 匹配模式为 1. Introduction
-            # 从self.text中进行标记
-            queue = []
-            log = 1
-            count = 0
-            # 遍历每页
-            for index,texts in enumerate(self.text):
-                texts = texts.split("\n")
-                self.text[index] = ""
-                # 遍历每行
-                for index_1,text in enumerate(texts):
-                    if text == "\n":
-                        continue
-                    if queue == []:
-                        queue = self.title_queue(self.title_tree)
-                    # 遍历每个可能的标题号
-                    for i,lis in enumerate(queue):
-                        lis_to_str = self.list_to_str(lis)
-
-                        if lis_to_str ==  text:
-                            if self.design_en_or_space_2(texts[index_1+1].strip(".")):
-                                self.text[index] += "#"*3 + text + " "
-                                log = 1
-                                queue = []
-                                self.logger.success(f"成功找到标题：{text} {texts[index_1+1]}")
-                                if i == 0:
-                                    # self.logger.info("i==0")
-                                    if self.title_tree.value == []:
-                                        self.title_tree.sons = [TitleTree(value=[1],parent=self.title_tree)]
-                                    else:
-                                        _list = self.title_tree.value.copy()
-                                        _list.append(1)
-                                        self.title_tree.sons = [TitleTree(value=_list,parent=self.title_tree)]
-                                    self.title_tree = self.title_tree.sons[0]
-                                    # self.logger.info(f"end {self.title_tree.value}")
-
-                                elif i == 1:
-                                    # self.logger.info("i=1")
-                                    _list = self.title_tree.value.copy()
-                                    _list[-1] += 1
-                                    self.title_tree.parent.sons.append(TitleTree(value=_list,parent=self.title_tree.parent))
-                                    self.title_tree = self.title_tree.parent.sons[-1]
-                                elif i == 2:
-                                    # self.logger.info("i=2")
-                                    _list = self.title_tree.parent.value.copy()
-                                    _list[-1] += 1
-                                    self.title_tree.parent.parent.sons.append(TitleTree(value=_list,parent=self.title_tree.parent.parent))
-                                    self.title_tree = self.title_tree.parent.parent.sons[-1]
-                                elif i == 3:
-                                    # self.logger.info("i=3")
-                                    _list = self.title_tree.parent.parent.value.copy()
-                                    _list[-1] += 1
-                                    self.title_tree.parent.parent.sons.append(TitleTree(value=_list,parent=self.title_tree.parent.parent.parent))
-                                    self.title_tree = self.title_tree.parent.parent.parent.sons[-1]
-                                break
-                    if log==0:
-                        self.text[index] += text + "\n"
-                    else:
-                        log = 0
-                    
-
-            
-
-
-            
-        
-
     # 下面是新的函数用来将表格内容在上方的情况解决
 
 
@@ -849,17 +577,9 @@ def find_matches(text:str) -> int:
     print("="*100)
 if __name__ == "__main__": 
 
-    files = PaperCleaner("./2.pdf")
-    # files.search_title()
-    # tree = TitleTree(value=[1])
-    # tree1 = TitleTree(value=[1,1],parent=tree)
-    # tree2 = TitleTree(value=[1,1,1],parent=tree1)
-    # files.title_queue(tree2)
-    files.title_pattern_2()
-    with open("log.txt",'w') as f:
-        for text in files.text:
-            # print(text)
-            f.write(text)
+    files = PaperCleaner1("./3.pdf")
+    for text in files.text:
+        print(text)
 
 
 # 对表格的内容清除还不到位

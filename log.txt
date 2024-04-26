@@ -1,1724 +1,1965 @@
-Journal of Machine Learning for Biomedical Imaging 2023:016 vol. 2, pp. 507–546
-Special issue: Special Issue for Generative Models
-Guest editors: Mert Sabuncu, Sotirios A. Tsaftaris
-Submitted 10/2023
-Published 12/2023
-A Recycling Training Strategy for Medical Image Segmentation
-with Diffusion Denoising Models
-Yunguan Fu
-https://orcid.org/0000-0002-1184-7421
-yunguan.fu.18@ucl.ac.uk; y.fu@instadeep.com
-University College London, UK; InstaDeep, UK
-Yiwen Li
-https://orcid.org/0000-0002-7794-9391
-yiwen.li@st-annes.ox.ac.uk
-University of Oxford, UK
-Shaheer U. Saeed
-https://orcid.org/0000-0002-5004-0663
-shaheer.saeed.17@ucl.ac.uk
-University College London, UK
-Matthew J. Clarkson
-https://orcid.org/0000-0002-5565-1252
-m.clarkson@ucl.ac.uk
-University College London, UK
-Yipeng Hu
-https://orcid.org/0000-0003-4902-0486
-yipeng.hu@ucl.ac.uk
-University College London, UK
+Volume 1: Long Papers, pages 2421–2436
+July 9-14, 2023 ©2023 Association for Computational Linguistics
+Augmentation-Adapted Retriever Improves Generalization of Language
+Models as Generic Plug-In
+Zichun Yu1
+Chenyan Xiong2
+Shi Yu1
+Zhiyuan Liu13
+1Dept. of Comp. Sci. & Tech., Institute for AI, Tsinghua University, Beijing, China
+2Microsoft Research, Redmond, USA
+3Beijing National Research Center for Information Science and Technology, Beijing, China
+{yuzc19, yus21}@mails.tsinghua.edu.cn; chenyan.xiong@microsoft.com
+liuzy@tsinghua.edu.cn
 Abstract
-Denoising diffusion models have found applications in image segmentation by generating
-segmented masks conditioned on images. Existing studies predominantly focus on adjusting
-model architecture or improving inference, such as test-time sampling strategies. In this
-work, we focus on improving the training strategy and propose a novel recycling method.
-During each training step, a segmentation mask is first predicted given an image and
-a random noise.
-This predicted mask, which replaces the conventional ground truth
-mask, is used for the denoising task during training. This approach can be interpreted
-as aligning the training strategy with inference by eliminating the dependence on ground
-truth masks for generating noisy samples. Our proposed method significantly outperforms
-standard diffusion training, self-conditioning, and existing recycling strategies across multiple
-medical imaging data sets: muscle ultrasound, abdominal CT, prostate MR, and brain MR.
-This holds for two widely adopted sampling strategies: denoising diffusion probabilistic
-model and denoising diffusion implicit model. Importantly, existing diffusion models often
-display a declining or unstable performance during inference, whereas our novel recycling
-consistently enhances or maintains performance. We show for the first time that, under a
-fair comparison with the same network architectures and computing budget, the proposed
-recycling-based diffusion models achieved on-par performance with non-diffusion-based
-supervised training. Furthermore, by ensembling the proposed diffusion model and the
-non-diffusion counterpart, significant improvements to the non-diffusion models have been
-observed across all applications, demonstrating the value of this novel training method.
-This paper summarizes these quantitative results and discusses their values, with a fully
-reproducible JAX-based implementation, released at https://github.com/mathpluscode/
-ImgX-DiffSeg.
-Keywords:
-Image Segmentation, Diffusion Model, Recycling, Muscle Ultrasound, Ab-
-dominal CT, Prostate MR, Brain MR
-©2023 Fu et al.. License: CC-BY 4.0
-https://doi.org/10.59275/j.melba.2023-fbe4
-arXiv:2308.16355v3  [eess.IV]  8 Dec 2023
-
-Fu et al.
-1. Introduction
-Diffusion denoising models, first proposed by Sohl-Dickstein et al. (2015); Ho et al. (2020);
-Ho and Salimans (2022), are generative models that produce data samples through iterative
-denoising processes. These models achieved superior performance compared to generative
-adversarial networks (Goodfellow et al., 2020) and became the foundation for many image
-generation applications such as DALL·E 2 (Ramesh et al., 2022), stable diffusion, and
-Midjourney (Rombach et al., 2022), etc. Given the success in computer vision, diffusion models
-have been adapted in medical imaging in various fields, including image synthesis (Dorjsembe
-et al., 2022; Khader et al., 2022), image denoising (Hu et al., 2022), anomaly detection (Wolleb
-et al., 2022a), classification (Yang et al., 2023), segmentation (Wu et al., 2022; Rahman
-et al., 2023), and registration (Kim et al., 2022). Among these, segmentation is one of the
-most foundational tasks in medical imaging and a variety of applications have been explored,
-including liver CT (Xing et al., 2023), lung CT (Zbinden et al., 2023; Rahman et al., 2023),
-abdominal CT (Wu et al., 2023; Fu et al., 2023), brain MR (Pinaya et al., 2022a; Wolleb
-et al., 2022b; Wu et al., 2023; Xing et al., 2023; Bieder et al., 2023), and prostate MR (Fu
-et al., 2023).
-For segmentation tasks, although various model architectures and training strategies
-(Wang et al., 2022) have been proposed, U-net equipped with attention mechanisms and
-trained by supervised learning consistently remains the state-of-the-art model and an impor-
-tant baseline. In comparison, divergent observations have emerged: some studies reported
-superior performance of diffusion-based segmentation models (Amit et al., 2021; Wu et al.,
-2022, 2023; Xing et al., 2023), while others observed the opposite trend (Pinaya et al., 2022a;
-Wolleb et al., 2022b; Kolbeinsson and Mikolajczyk, 2022; Fu et al., 2023). This inconsistency
-may result from different training schemes, network architectures, and application-specific
-modifications in comparisons, suggesting that challenges persist in applying diffusion models
-for image segmentation.
-Formally, conditioning on an image, diffusion-based segmentation models operate by
-progressive denoising, starting with random noise and ultimately yielding the corresponding
-segmentation masks. In comparison to their non-diffusion counterparts, the necessity of
-supplementary noisy masks as input leads to increased memory demands that can pose
-challenges, particularly for processing 3D volumetric medical images. To address this, volume
-slicing (Wu et al., 2023) or patching (Xing et al., 2023; Bieder et al., 2023) has been used to
-manage memory limitations. However, diffusion model training still requires considerable
-computation due to its inherent iterative nature, since the same model needs to learn to denoise
-masks with varying levels of noise. Consequently, enhancing the diffusion model performance
-while adhering to a fixed compute budget is of significant importance. Empirically, using the
-reparametrisation (Kingma et al., 2021), the denoising training task has shifted from noise
-prediction (Wolleb et al., 2022b; Wu et al., 2022) to mask prediction (Fu et al., 2023; Zbinden
-et al., 2023) due to the superior performance and faster learning. Furthermore, Fu et al.
-(2023) highlighted a limitation of diffusion models, noting the misalignment between training
-and inference procedures, since training samples were generated from ground truth masks.
-This raises concerns of data leakage as discussed in Chen et al. (2022a). However, there have
-been limited studies in medical image segmentation that rigorously compare diffusion models
-with their non-diffusion counterparts and examine diffusion training efficiency.
-508
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-In this work, we present a substantial extension to the preliminary work (Fu et al.,
-2023) and focus on an improvement in the diffusion denoising model training strategy that
-applies to 2D and 3D medical image segmentation in different modalities. First, a novel
-recycling approach has been introduced. Different from Fu et al. (2023), in the first step
-during training, the input is completely corrupted by noise instead of a partially corrupted
-ground truth. This seemingly minor adjustment effectively eliminates the ground truth
-information from model inputs, which further aligns the training strategy toward inference.
-The proposed diffusion models can refine or maintain segmentation accuracy throughout
-the inference process. On the contrary, all other diffusion models demonstrate declining
-or unstable performance trends. Our research showcases the superior performance of our
-method compared to established diffusion training strategies (Ho et al., 2020; Chen et al.,
-2022b; Watson et al., 2023; Fu et al., 2023) for both denoising diffusion probabilistic model-
-based (Ho et al., 2020) and denoising diffusion implicit model-based (Song et al., 2020a)
-sampling procedures. We also achieved on-par performance with non-diffusion baselines that
-had not been observed in the previous study (Fu et al., 2023). Second, we introduce an
-ensemble model that averages the predicted probabilities from the proposed diffusion-based
-model and non-diffusion counterpart, resulting in significant improvement to the non-diffusion
-baseline. Third, we extended the experiments to four large data sets – 2D muscle ultrasound
-with 3910 images, 3D abdominal CT with 300 images, 3D prostate MR with 589 images,
-and 3D brain MR with 1251 images, further demonstrating the robustness of the proposed
-method against different applications and data types. Lastly, we integrated a Transformer
-block into our network architecture. This brings our models in line with contemporary
-state-of-the-art approaches, rendering our findings more pertinent to real-world applications.
-To mitigate the increased memory consumption resulting from this addition, we employed
-patch-based training and inference strategies. The JAX-based framework has been released
-on https://github.com/mathpluscode/ImgX-DiffSeg.
-2. Related Works
-The diffusion process is a Markov process where data structures are gradually noise-corrupted
-and eventually destroyed (noising process). A reverse diffusion process (denoising process)
-can then be learned, where the objective is to gradually recover the data structure. Sohl-
-Dickstein et al. (2015) first proposed diffusion models which map the disrupted data to a noise
-distribution. Ho et al. (2020) have shown that such modeling is equivalent to score-matching
-models, a class of models that estimates the gradient of the log-density (Hyvärinen and Dayan,
-2005; Vincent, 2011; Song and Ermon, 2019, 2020). This led to a simplified variational lower
-bound training objective and a denoising diffusion probabilistic model (DDPM) (Ho et al.,
-2020). DDPM achieved state-of-the-art performance for unconditional image generation
-on CIFAR10 at the time. In practice, DDPMs were found suboptimal on log-likelihood
-estimation and Nichol and Dhariwal (2021) addressed this with a learnable variance schedule,
-sinusoidal noise schedule, and an importance sampling for time steps. Furthermore, diffusion
-models were trained with hundreds or thousands of steps, inference with the same number
-of steps is time-consuming. Therefore, different strategies have been proposed to enable
-faster sampling. While Nichol and Dhariwal (2021) suggested variance resampling without
-modifying the probabilistic distribution, Song et al. (2020a) derived a deterministic model,
-509
-
-Fu et al.
-denoising diffusion implicit model (DDIM), which shares the same marginal distribution
-as DDPM. Liu et al. (2022) further generalized the reverse step of DDIM into an ordinary
-differential equation and used high-order numerical methods (e.g., Runge-Kutta method)
-with predicted noise to perform sampling with second-order convergence. Besides, Zheng
-et al. (2022); Lyu et al. (2022); Guo et al. (2022) accelerated diffusion model training by
-shortening the noising schedule and only considering a truncated diffusion chain with less
-noise. These unconditioned denoising diffusion models have been successfully applied in
-multiple medical imaging applications (Kazerouni et al., 2023), including brain MR image
-generation (Dorjsembe et al., 2022; Khader et al., 2022), optical coherence tomography
-denoising (Hu et al., 2022), and chest X-ray pleural effusion detection (Wolleb et al., 2022a).
-Guided diffusion models have been developed to generate data in a controllable man-
-ner. Song et al. (2020b); Dhariwal and Nichol (2021) used gradients of pre-trained classifiers
-to bias the sampling process, without modifying the diffusion model training. Ho and Sal-
-imans (2022), on the other hand, modified the models to take additional information as
-input, enabling end-to-end conditional diffusion model training. For medical image syn-
-thesis, conditions can be patient biometric information (Pinaya et al., 2022b), genotypes
-data (Moghadam et al., 2023), or images from different modalities (Saeed et al., 2023).
-Conditional diffusion models have also been explored for medical image classification (Yang
-et al., 2023), segmentation (Wu et al., 2022; Rahman et al., 2023), and registration (Kim
-et al., 2022). Particularly for image segmentation, the diffusion models apply the noising
-and denoising on the segmentation masks, and the network takes a noisy mask and an image
-to perform denoising.
-In contrast to the continuous spectrum of values found in natural images, image segmen-
-tation mask values are categorical and nominal. The Gaussian-based continuous diffusion
-processes behind DDPM and DDIM cannot be directly applied. Chen et al. (2022b) therefore
-encoded categories with binary bits and relaxed them to real values for continuous diffusion
-models. Han et al. (2022); Fu et al. (2023) encoded categories with one-hot embeddings and
-performed diffusion on scaled values. Li et al. (2022a); Strudel et al. (2022) encoded the
-discrete data and applied diffusion processes in embedding spaces directly. Alternatively, dis-
-crete diffusion models have been proposed to model the transition matrix between categories
-based on discrete probability distributions, including binomial distribution (Sohl-Dickstein
-et al., 2015), categorical distribution (Hoogeboom et al., 2021; Austin et al., 2021; Gu et al.,
-2022), and Bernoulli distribution (Chen et al., 2023). In this work, we follow Fu et al. (2023)
-to perform diffusion on scaled binary masks.
-Originally, DDPM models were trained through noise prediction (Ho et al., 2020), where
-the loss was calculated between the predicted and sampled noises. Many diffusion-based
-segmentation models directly adopted this strategy (Wolleb et al., 2022b; Wu et al., 2022).
-Alternatively, Kingma et al. (2021) derived an equivalent formulation (often known as x0
-reparameterization) of the variational lower bound and simplified the loss to a norm between
-predicted data and the corresponding ground truth. For segmentation, this is equivalent to
-predicting the segmentation mask for each time step. Compared to noise prediction, multiple
-studies found that this mask prediction strategy is more efficient (Fu et al., 2023; Wang
-et al., 2023; Lai et al., 2023). Furthermore, Chen et al. (2022b) suggested self-conditioning
-to use these predictions as additional input to improve diffusion models for image synthesis.
-Self-conditioning contains two steps: the first step predicts a noise-free sample given a
-510
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-noise-corrupted sample only; the second step uses the same timestep and inputs the same
-noise-corrupted sample, as well as the prediction from the first step. This technique was later
-adopted for protein design (Watson et al., 2023) with an additional reverse step, where the
-second step performs denoising in a smaller timestep where the noise level is lower. However,
-in both cases, the noisy samples are directly derived from the ground truth, which is not
-available during inference. This risks data leakage during training and empirically leads to
-overfitting and lack of generalization as discussed in Chen et al. (2022a); Kolbeinsson and
-Mikolajczyk (2022); Lai et al. (2023). Chen et al. (2022a); Young et al. (2022) addressed
-this issue by controlling the signal-to-noise ratio so that less information is preserved after
-noising: Chen et al. (2022a) scaled the mask value ranges to implicitly amplify the noise
-level, and Young et al. (2022) explicitly varied the scale and standard deviation of the
-Gaussian noise added to the masks. On the other hand, Kolbeinsson and Mikolajczyk (2022)
-proposed recursive denoising that iterates through each step during training, without using
-ground truth as input. However, such a strategy extends the training length by a factor
-of hundreds or more, making it practically infeasible for larger 3D medical image data
-sets. Following these studies, Fu et al. (2023) concluded that the lack of generalization
-in diffusion-based segmentation models is due to the misalignment between training and
-inference processes. Fu et al. (2023) thus presented a two-step recycling training strategy: the
-first step ingests a partially noisied sample for mask prediction; the predicted mask is then
-noise-corrupted again for denoising training. Compared to recursive denoising, this method
-requires a limited training time increase. This method also resembles PD-DDPM (Guo
-et al., 2022), where a pre-segmentation is used for noising. However, PD-DDPM requires a
-separate pre-segmentation network and more device memory, thus not suitable for 3D image
-segmentation applications.
-3. Background
-3.1 Denoising Diffusion Probabilistic Model
-xT GGGB
-F GGG · · · GGGB
-F GGG xt
-pθ(xt−1 | xt)
-GGGGGGGGGGGGGGGGGB
-F GGGGGGGGGGGGGGGGG
-q(xt | xt−1)
-xt−1 GGGB
-F GGG · · · GGGB
-F GGG x0
-(1)
-Definition
-The denoising diffusion probabilistic models (DDPM) (Ho et al., 2020) consider
-a forward process (illustrated from right to left in Equation (1)): given a sample x0 ∼
-q(x0), a noise-corrupted sample xt follows a multivariate normal distribution at timestep
-t ∈ {1, · · · , T}, q(xt | xt−1) = N(xt; √1 − βtxt−1, βtI), where βt ∈ [0, 1]. As Gaussians
-are closed under convolution, given x0, xt can be directly sampled from x0 as follows,
-q(xt | x0) = N(xt; √¯αt x0, (1 − ¯αt)I).
-Correspondingly, a reverse process (illustrated
-from left to right in Equation (1)) denoises xt at each step, for t ∈ {T, · · · , 1}, pθ(xt−1 |
-xt) = N(xt−1; µθ(xt, t), σ2
-t I), with a predicted mean µθ(xt, t) and variance σ2
-t I. σt is a
-pre-defined schedule dependent on timestep t. In this work, σ2
-t = ˜βt = 1−¯αt−1
-1−¯αt βt with
-αt = 1 − βt and ¯αt = Qt
-s=1 αs. The mean µθ(xt, t) =
-√¯αt−1βt
-1−¯αt
-ˆx0 + 1−¯αt−1
-1−¯αt
-√αtxt, also know
-as x0 parameterization, where ˆx0 is an estimation of x0 from a learned neural network
-ˆx0 = fθ(xt, t).
-511
-
-Fu et al.
-Training
-For each step during training, a noise-corrupted sample xt is sampled and
-input to the neural network fθ to predict x0.
-The network is then trained with loss
-Ldenoising(θ) = Et,x0,xt L(x0, ˆx0) with t sampled from 1 to T. L(·, ·) is a loss function in the
-space of x. In this work, importance sampling (Nichol and Dhariwal, 2021) is used for time
-step t, where the weight for t is proportional to Ex0,xt L(x0, ˆx0).
-xt ∼ N(xt; √¯αtx0, (1 − ¯αt)I),
-(Sampling)
-(2a)
-ˆx0 = fθ(t, xt),
-(Prediction)
-(2b)
-Ldenoising(θ) = Et,x0,xt L(x0, ˆx0),
-(loss calculation)
-(2c)
-Inference
-At inference time, the denoising starts with a randomly sampled Gaussian noise
-xT ∼ N(0, I) and the data is denoised step-by-step for t = T, · · · , 1:
-pθ(xt−1 | xt) = N(xt−1; µθ(xt, t), σ2
-t I)
-µθ(xt, t) =
-√¯αt−1βt
-1 − ¯αt
-ˆx0 + 1 − ¯αt−1
-1 − ¯αt
-√αt xt
-Optionally, the variance schedule βt can be down-sampled to reduce the number of inference
-steps (Nichol and Dhariwal, 2021). A detailed review of DDPM and the loss has been
-summarised in Appendix A and we refer the readers to Sohl-Dickstein et al. (2015); Ho et al.
-(2020); Nichol and Dhariwal (2021); Kingma et al. (2021) and other literature for in-depth
-understanding and derivations.
-3.2 Diffusion for Segmentation
-When applying diffusion models for segmentation, noising and denoising are performed on the
-segmentation masks. The ground-truth binary mask, where channels correspond to classes
-that include the background, is denoted by x0. For the i-th pixel/voxel, the value for the j-th
-channel is in 1 if it belongs to class j and −1 otherwise. The training process (illustrated
-in Figure 1) is similar to Equation (2) except that the segmentation network fθ(I, xt, t) now
-takes the image I as an additional input for prediction ˆx0. L(·, ·) is a weighted sum of cross
-entropy and foreground-only Dice loss.
-xt ∼ N(xt; √¯αtx0, (1 − ¯αt)I),
-(Sampling)
-(3a)
-ˆx0 = fθ(I, t, xt),
-(Prediction)
-(3b)
-Ldenoising(θ) = Et,x0,xt L(x0, ˆx0),
-(loss calculation)
-(3c)
-4. Methods
-At each training step, the recycling considers a sampled time step t < T and a data sample
-x0. First, a noise-corrupted sample xT at time step T is sampled, with √¯αT ≈ 0. xT is
-fed to the network fθ to perform a prediction ˆx0 = fθ(I, T, xT ). This prediction is then
-noise-corrupted to generate xt. A second prediction ˆx0 = fθ(I, t, xt) (overriding the ˆx0
-for simplicity) is produced and used for loss calculation (see Figure 1). Formally, at each
-512
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-Figure 1: Illustration of training and inference processes. The top, middle, and
-bottom rows show the training and inference steps for default diffusion (highlighted in blue),
-diffusion with recycling, and diffusion with self-conditioning, respectively. For training,
-different settings are presented for recycling and self-conditioning. The proposed method is
-highlighted in green. Notably, recycling shares the same inference steps as default diffusion,
-while self-conditioning is different as a result of the additional input. “Pred.” and “Diff.”
-stands for predicted and diffusion, respectively.
-513
-
-Fu et al.
-timestep t, the proposed recycling (denoted as “Diff. rec. xT ”) has the following steps.
-xT ∼ N(xT ; √¯αT x0, (1 − ¯αT )I),
-(rec. xT , step 1, sampling)
-(4a)
-ˆx0 = StopGradient(fθ(I, T, xT )),
-(rec. xT , step 1, prediction)
-(4b)
-xt ∼ N(xt; √¯αtˆx0, (1 − ¯αt)I),
-(rec. xT , step 2, sampling)
-(4c)
-ˆx0 = fθ(I, t, xt),
-(rec. xT , step 2, prediction)
-(4d)
-Ldenoising(θ) = Et,x0,xt L(x0, ˆx0),
-(loss calculation)
-(4e)
-In particular, stop gradient is applied to ˆx0 in the first step to prevent the gradient calculation
-across two steps, to reduce training time. Optionally, a model with exponential moving
-averaged weights can be used, but it requires even more memory. Compared to Equation (3),
-recycling modification only affects training and does not change network architecture. It is
-independent of the sampling strategy during inference. Therefore, the DDIM sampler can
-also be used for inference.
-The recycling strategy we propose in this work differs from the one introduced in Fu
-et al. (2023) (denoted as “Diff. rec. xt+1”), illustrated in Figure 1 and the equations below,
-xt+1 ∼ N(xt+1; √¯αt+1 x0, (1 − ¯αt)I),
-(rec. xt+1, step 1, sampling)
-(5a)
-ˆx0 = StopGradient(fθ(I, t + 1, xt+1)),
-(rec. xt+1, step 1, prediction)
-(5b)
-xt ∼ N(xt; √¯αtˆx0, (1 − ¯αt)I),
-(rec. xt+1, step 2, sampling)
-(5c)
-ˆx0 = fθ(I, t, xt),
-(rec. xt+1, step 2, prediction)
-(5d)
-Ldenoising(θ) = Et,x0,xt L(x0, ˆx0),
-(loss calculation)
-(5e)
-In the new approach (“Diff. rec. xT ”), the first step is consistently executed at the time step
-T instead of t + 1 as shown in Equation (4). Compared to xt+1 in Equation (5), xT is fully
-noised and contains even less ground truth information during the initial step. Specifically,
-for a given time step t, xt ∼ N(xt; √¯αt x0, (1 − ¯αt)I), which can be reparameterized as xt =
-√¯αt x0 +√1 − ¯αt ϵt with ϵt ∼ N(0, I) and ¯αt = Qt
-s=1 αs. In this work, αt is a monotonically
-decreasing noise schedule ranging from 0.999 to 0.98 for t = 1 to T. Correspondingly,
-√¯αt monotonically decreases from 0.99995 to 0.00632. xT = √¯αT x0 +√1 − ¯αT ϵT with
-√¯αT = 0.00632 can be considered to contain almost no ground truth information. The
-information can also be empirically measured by cross entropy and Dice score, and an
-example is presented in Figure 7 in Appendix D. This seemingly minor modification removes
-the ground truth information from model inputs, essentially reducing the risk of data leakage
-and training overfitting. This adaptation guides the model to learn the denoising task based
-on its initial prediction, rather than ground truth. Consequently, the model can effectively
-denoise and refine the provided noisy mask, ultimately predicting the ground truth.
-Recycling also differs from the self-conditioning methods proposed in Chen et al. (2022b)
-(“Diff. sc. xt”) and Watson et al. (2023) (“Diff. sc. xt+1”). Although self-conditioning also
-requests two forward loops during training, it differs from recycling in multiple aspects. First,
-noisy samples in self-conditioning are always generated based on ground truth x0, while the
-second forward step of recycling does not rely on ground truth for noisy sample generation.
-Second, self-conditioning provides an additional input ˆx0, while recycling does not. Lastly,
-in self-conditioning, ˆx0 is replaced by zeros with 50% probabilities, while recycling is applied
-514
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-constantly. The training strategy has been detailed in Figure 1 and Appendix C. For further
-details, we refer the reader to the reference papers (Chen et al., 2022b; Watson et al., 2023).
-5. Experiments
-5.1 Experiment Setting
-A range of experiments have been performed in four data sets (Section 5.2) to evaluate the
-proposed method and the trained models from different aspects.
-5.1.1 Diffusion Training Strategy Comparison
-First, the proposed recycling training strategy (“Diff. rec. xT ”) was compared with standard
-diffusion models (“Diff.”) and other diffusion training strategies that require two forward
-steps to evaluate the training efficiency with identical network architectures and compute
-budget. The compared diffusion training strategies include the previously proposed recycling
-method Fu et al. (2023) (“Diff. rec. xt+1”) and two self-conditioning techniques from Chen
-et al. (2022b) (“Diff.
-sc.
-xt”) and Watson et al. (2023) (“Diff.
-sc.
-xt+1”).
-For each
-trained model using a different strategy, both DDPM and DDIM samplers were evaluated.
-Importantly, the predictions at each inference step were assessed to study the variation of
-performance along the inference process.
-5.1.2 Comparison to Non-diffusion Models
-The proposed methods were compared with non-diffusion-based models using identical
-architectures and the same compute budget. An ensemble model was also evaluated, where
-the predicted probabilities from the diffusion model and non-diffusion model were averaged.
-Models’ segmentation accuracy was assessed with different granularities: per foreground
-class or averaged across foreground classes. Balnd-altmann plots were used to analyze the
-differences between models.
-5.1.3 Ablation Studies for Recycling
-Ablation studies were performed, including assessing the performance with different lengths of
-inference and evaluating the stochasticity across different seeds during inference. Compared
-to the previous work (Fu et al., 2023), the effectiveness of the Transformer architecture and
-the change of training noise schedule was evaluated.
-5.1.4 Evaluation Metrics
-Different methods were evaluated using binary Dice score (DS) and 95% Hausdorff distance
-(HD), averaging over foreground classes on the test sets. Dice score is reported in percentage,
-between 0% and 100%. For Hausdorff distance, the values are in mm for 3D volumes and
-pixels for 2D images. Paired Student’s t-tests with a significance level of α = 0.05 were
-performed on the Dice score to test statistical significance between model performance.
-515
-
-Fu et al.
-5.2 Data
-5.2.1 Muscle Ultrasound
-The data set1 (Marzola et al., 2021) provides 3910 labeled transverse musculoskeletal ul-
-trasound images, which were split into 2531, 666, and 713 images for training, validation,
-and test sets, respectively. Images had the shape 480 × 512. The predicted masks were
-post-processed, following Marzola et al. (2021). After filling the holes, multiple morphological
-operations were performed, including an erosion with a disk of radius 3 pixels, a dilation with
-a disk of radius 5 pixels, and an opening with a disk of radius 10 pixels. Afterward, only the
-largest connected component was preserved if the second largest structure was smaller than
-75% of the largest one; otherwise, the most superficial (i.e., towards the top of the image)
-one between the two largest components was preserved. Finally, holes were filled if there
-were any.
-5.2.2 Abdominal CT (AMOS)
-The data set2 (Ji et al., 2022) provides 200 and 100 CT image-mask pairs for 15 abdominal
-organs in training and validation sets. The validation set was randomly split into non-
-overlapping validation and test sets, with 10 and 90 images, respectively. The images were
-first resampled with a voxel dimension of 1.5 × 1.5 × 5.0 (mm). HU values were clipped
-to [−991, 362] and images were normalized so that the intensity had zero mean and unit
-variance. Lastly, images were center-cropped to shape 192 × 128 × 128. During training, the
-patch size was 128 × 128 × 128. During inference, the overlap between patches is 64 × 0 × 0,
-and the predictions on the overlap were averaged.
-5.2.3 Prostate MR
-The data set3 (Li et al., 2022b) contains 589 T2-weighted image-mask pairs for 8 anatomical
-structures from 7 institutions. The images were randomly split into non-overlapping training,
-validation, and test sets, with 411, 14, and 164 images in each split, respectively. The
-validation split has two images of each institution. The images were resampled with a
-voxel dimension of 0.75 × 0.75 × 2.5 (mm). Afterward, images were normalized so that the
-intensity had zero mean and unit variance. Lastly, the images were center-cropped to shape
-256 × 256 × 48. During training, the patch size was 256 × 256 × 32. During inference, the
-overlap between patches was 0 × 0 × 16, and the predictions on the overlap were averaged.
-5.2.4 Brain MR (BraTS 2021)
-The data set4 (Baid et al., 2021) provides 1251MR segmented mpMRI scans for brain tumour.
-The data set was randomly split into non-overlapping training, validation, and test sets,
-with 938, 31, and 282 samples, respectively. The whole tumor mask was generated as
-foreground class, including GD-enhancing tumor, the peritumoral edematous/invaded tissue,
-and the necrotic tumor core. Therefore, the task was a binary segmentation. Four modalities
-1. https://data.mendeley.com/datasets/3jykz7wz8d/1
-2. https://zenodo.org/record/7155725#.ZAkbe-zP2rO
-3. https://zenodo.org/record/7013610#.ZAkaXuzP2rM
-4. https://www.kaggle.com/datasets/dschettler8845/brats-2021-task1
-516
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-are available, including T1-weighted (T1), post-contrast T1-weighted (T1Gd), T2-weighted
-(T2), and T2 Fluid Attenuated Inversion Recovery (T2-FLAIR). The voxel dimension was
-1.0 × 1.0 × 1.0 (mm). Images were firstly normalized so that the intensity has zero mean and
-unit variance. Lastly, images were center-cropped to shape 179 × 219 × 155 to remove the
-common background. During training, the patch size was 128 × 128 × 128. During inference,
-the overlap between patches was 77 × 37 × 101, and the predictions on the overlap were
-averaged.
-5.3 Implementation Details
-Figure 2: Unet architecture for diffusion and non-diffusion models. The inputs
-are concatenated when a noisy mask (from diffusion models) or predicted mask (from self-
-conditioning) is provided. The tensor is enriched with convolution (time-conditioned for
-diffusion models) and down-sampling layers, then passed into a Transformer with positional
-encoding, the output is then enriched with convolution and up-sampling layers, and finally,
-prediction is performed with an additional 1 × 1 convolutional layer. “Pred.” stands for
-predicted.
-2D and 3D U-net variants with attention mechanisms were used for benchmarking the
-reference performance from cross-data-set non-diffusion models. The architecture is illustrated
-in Figure 2. U-nets have four layers with 32, 64, 128, and 256 channels, respectively. The
-numbers of learnable parameters are summarized in Table 7 in Appendix E. For diffusion-
-based models, the noise-corrupted masks were concatenated.
-Time was encoded using
-sinusoidal positional embedding (Rombach et al., 2022) and used in the convolution layers.
-For denoising training, a linear β schedule between 0.0001 and 0.02 was used for T = 1001
-(illustrated in Figure 7 in Appendix D). The segmentation-specific loss function is a weighted
-sum of cross-entropy and foreground-only Dice loss, with weight 20 and 1 respectively (Kirillov
-et al., 2023). Random rotation, translation, and scaling were adopted for data augmentation
-517
-
-Fu et al.
-during training. Training hyper-parameters are listed in Table 6 in Appendix E. Hyper-
-parameters were configured empirically without extensive tuning.
-Models were trained once and checkpoints were saved every 500 step. The checkpoint
-that had the best mean binary Dice score (without background class) in the validation
-set was used for the testing. For DDIM, the training was the same as DDPM while both
-validation and testing were performed using DDIM. The variance schedule was down-sampled
-to 5 steps (Nichol and Dhariwal, 2021). Experiments were carried out using bfloat16 mixed
-precision on TPU v3-8, which has 16×8 GB device memory. However, each device has only 16
-GB memory, meaning that the model and data have to fit into 16 GB memory. The JAX-based
-framework has been released on https://github.com/mathpluscode/ImgX-DiffSeg.
-6. Results and Discussion
-6.1 Diffusion Training Strategy Comparison
-Our proposed recycling method (Diff. rec. xT ) achieved mean Dice scores of 88.23%, 87.45%,
-85.54%, and 92.29% on muscle ultrasound, abdominal CT, prostate MR, and brain MR
-data sets, respectively. These scores marked absolute improvements of 1.63%, 2.20%, 1.93%,
-and 2.00% over standard diffusion models, respectively. The relative improvements are
-1.88%, 2.58%, 2.31%, and 2.22% respectively. Impressively, this novel strategy consistently
-outperformed the other three training approaches in terms of both Dice score and Hausdorff
-distance. The observed differences were significant for all data sets in terms of Dice score
-(p = 0.003 for muscle ultrasound and p < 0.001 for other data sets). These findings held
-for both the DDPM and the DDIM samplers, underscoring the wide applicability of the
-proposed training strategy.
-As depicted in Figure 8 in Appendix F.1, standard diffusion models often produce
-segmentation masks in the last step that are less accurate than the initial prediction. Similar
-challenges were observed with self-conditioning strategies and previously proposed recycling
-methods. The newly introduced recycling method was the only approach that improved
-initial segmentation predictions for more than half of the test images. Moreover, the average
-performance per step has been visualized in Figure 3, where diffusion models frequently
-exhibit gradually declining or unstable performance during inference, in terms of both Dice
-score and Hausdorff distance. It is interesting to observe that often the optimal prediction
-emerges not at the final step but rather at an intermediate stage. This has been observed
-in all diffusion models except the newly proposed diffusion model with the innovative
-recycling method. In the latter case, the quality of segmentation consistently improved
-or remained stable throughout the inference process, distinguishing it from the observed
-trend. A qualitative comparison on an example muscle ultrasound image has been illustrated
-in Figure 4, where the proposed diffusion model was able to refine the segmentation mask
-progressively. Similar observations have been noted with the DDIM sampler as well, as
-shown in Figure 9 and Figure 10. This finding aligns with the discussions from Kolbeinsson
-and Mikolajczyk (2022); Lai et al. (2023) that the diffusion-based segmentation model
-performance is strongly influenced by the prediction of the initial step. For self-conditioning
-or the previously proposed recycling, the denoising training relies on the ground truth to
-varying degrees therefore the diffusion models are trained with ground truth-like initial
-predictions. However, no ground truth is available during inference, and the distributions of
-518
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-Table 1: Diffusion training strategies comparison
-
-Fu et al.
-1
-2
-3
-4
-5
-86.5
-87
-87.5
-88
-Step
-DS
-(a) Dice Score for muscle ultrasound
-1
-2
-3
-4
-5
-36
-38
+Retrieval augmentation can aid language
+models (LMs) in knowledge-intensive tasks
+by supplying them with external information.
+Prior works on retrieval augmentation usually
+jointly fine-tune the retriever and the LM,
+making them closely coupled. In this paper, we
+explore the scheme of generic retrieval plug-in:
+the retriever is to assist target LMs that may
+not be known beforehand or are unable to
+be fine-tuned together.
+To retrieve useful
+documents for unseen target LMs, we propose
+augmentation-adapted retriever (AAR), which
+learns LM’s preferences obtained from a
+known source LM. Experiments on the MMLU
+and PopQA datasets demonstrate that our AAR
+trained with a small source LM is able to signif-
+icantly improve the zero-shot generalization of
+larger target LMs ranging from 250M Flan-T5
+to 175B InstructGPT. Further analysis indicates
+that the preferences of different LMs overlap,
+enabling AAR trained with a single source
+LM to serve as a generic plug-in for various
+target LMs.
+Our code is open-sourced at
+https://github.com/OpenMatch/Augmentation-
+Adapted-Retriever.
+###1 Introduction
+Large language models (LMs) that possess bil-
+lions of parameters are able to capture a signif-
+icant amount of human knowledge, leading to
+consistent improvements on various downstream
+tasks (Brown et al., 2020; Kaplan et al., 2020;
+Roberts et al., 2020). However, the undeniable
+drawback of large LMs lies in their high compu-
+tational cost, which negatively impacts their effi-
+ciency (Strubell et al., 2019; Bender et al., 2021).
+Furthermore, the knowledge memorized from pre-
+training and the implicit reasoning process of LMs
+can be inaccurate and intractable sometimes, hin-
+dering their applications on knowledge-intensive
+tasks (Guu et al., 2020; Lewis et al., 2020; Mallen
+et al., 2022; Wei et al., 2022).
+Flan-T5Base
+(250M)
+Flan-T5Large
+(780M)
+Flan-T5XL
+(3B)
+InstructGPT
+(175B)
+# Parameters
+35
 40
-42
-Step
-HD
-(b) Hausdorff distance for muscle ultrasound
+45
+50
+55
+60
+65
+MMLU Accuracy
+Standalone LM
+LM w/ Few-Shot Prompting
+LM w/ Adaptive Retrieval
+LM w/ AAR (Ours)
+Figure 1: Performance of LM w/ AAR (Ours).
+Instead of leveraging the knowledge and rea-
+soning abilities embedded within the parameters
+of the LMs, retrieval augmentation (Guu et al.,
+2020; Lewis et al., 2020; Borgeaud et al., 2022)
+enhances the LM with a retriever that can retrieve
+knowledge from an external corpus. On the other
+hand, prior retrieval augmentation methods (Izac-
+ard and Grave, 2021a; Izacard et al., 2022) necessi-
+tate fine-tuning the backbone LM to adjust to the
+retriever and tackle specific downstream tasks. This
+kind of fine-tuning can be expensive when more
+and more unique demands emerge (Maronikolakis
+and Schütze, 2021). More importantly, many top-
+tier LMs can only be accessed through black-box
+APIs (Ouyang et al., 2022; OpenAI, 2023). These
+APIs allow users to submit queries and receive re-
+sponses but typically do not support fine-tuning.
+In this paper, we introduce Augmentation-
+Adapted Retriever (AAR) to assist black-box LMs
+with downstream tasks as generic plug-in. To re-
+trieve valuable documents for many unseen LMs,
+we propose to leverage a small source LM to pro-
+vide LM-preferred signals for retriever’s training.
+The retriever after training (i.e., AAR) can be di-
+rectly utilized to assist a large target LM by plug-
+ging in the retrieved documents.
+Specifically, we choose a small encoder-decoder
+LM as the source LM and utilize its fusion-
+2421
+
+in-decoder attention scores (Izacard and Grave,
+2021a) to annotate LM-preferred documents. The
+LM-preferred documents are then combined with
+human-preferred documents to form the positive
+document set. Negative documents are mined by
+the retriever itself using the ANCE (Xiong et al.,
+2021) technique. After fine-tuning the retriever
+with LM’s preferences, it can directly assist unseen
+target LMs in the zero-shot task generalization.
+We evaluate AAR on a multi-task language
+understanding dataset MMLU (Hendrycks et al.,
+2021) and an entity-centric question answering
+dataset PopQA (Mallen et al., 2022). For the tar-
+get LMs, we choose Flan-T5 (Chung et al., 2022)
+series as our backbone for encoder-decoder LMs
+and InstructGPT (Ouyang et al., 2022) as our back-
+bone for decoder-only LMs. Figure 1 shows that
+assisted with a generic AAR, LMs of different sizes
+and architectures can consistently outperform the
+standalone LMs; the performance of smaller LMs
+can sometimes surpass the standalone counterparts
+of significantly larger sizes (e.g., Flan-T5Large w/
+AAR outperforms standalone Flan-T5XL by 0.6%).
+AAR also demonstrates advantages over other aug-
+mentation approaches such as few-shot prompting
+and adaptive retrieval (Mallen et al., 2022).
+Further analysis reveals that the preferences ob-
+tained from different-sized source LMs are similar,
+and LMs with near capacities tend to yield closer
+preferred document sets. As a result, our AAR
+model trained from a small source LM can be con-
+sidered as a generic plug-in to enhance the zero-
+shot generalization of a significantly larger target
+LM. We also discover that the documents preferred
+by LMs can provide assistance to the model from
+alternative perspectives, rather than relying solely
+on the full information favored by search users.
+###2 Related Work
+Retrieval Augmentation. Augmenting LMs with
+retrieved information from external memories has
+shown effective on diverse knowledge-intensive
+tasks (Guu et al., 2020).
+Prior works explore
+novel ways to train the whole retriever-LM sys-
+tem in an end-to-end fashion, using retrieval-
+augmented sequence log-likelihood (Lewis et al.,
+2020; Borgeaud et al., 2022), fusion-in-decoder
+attention distillation (Izacard and Grave, 2021a;
+Izacard et al., 2022), or knowledge graph (Ju et al.,
+2022). To decouple the retriever from LM, Rubin
+et al. (2022) train an independent prompt retriever
+for in-context learning, and Lin et al. (2022) only
+fine-tune the LM via the retrieved data that is simi-
+lar to few-shot unsupervised samples.
+Recent researches adopt zero-shot retrieval aug-
+mentation that does not fine-tune the LM on In-
+structGPT (Ouyang et al., 2022). It can benefit
+entity-centric question answering (Mallen et al.,
+2022), chain-of-thought reasoning (He et al., 2022),
+and multi-hop question answering (Khattab et al.,
+2022). Parallel work (Shi et al., 2023) uses LM
+likelihood to train the retriever for satisfying black-
+box LM’s preferences, and they adopt GPT-3
+Curie (Brown et al., 2020) to provide the super-
+vision signals. In this work, we devise the retriever
+that can be used as a generic plug-in to assist a
+variety of unseen LMs.
+Zero-shot Learning and Reasoning.
+Large-
+scale unsupervised pre-trained LMs like GPT-
+3 (Brown et al., 2020), GPT-4 (OpenAI, 2023),
+and PaLM (Chowdhery et al., 2022) are able to
+perform zero-shot learning on many downstream
+tasks with a task description provided at inference
+time. Instruction-finetuned LMs (Sanh et al., 2022;
+Chung et al., 2022; Ouyang et al., 2022), which
+are pre-trained on multiple supervised tasks using
+human instructions, also also exhibit robust zero-
+shot learning capabilities. Yu et al. (2023) pro-
+pose a new scheme of zero-shot reasoning, which
+first prompts large LMs to generate relevant docu-
+ments and then perform reading comprehension
+on the generated contents. Recently, there has
+been a growing trend of utilizing plug-and-play
+knowledge injection to enhance the zero-shot per-
+formance of LMs, which is achieved through map-
+ping network (Zhang et al., 2023) or document
+encoding (Xiao et al., 2023). Our work improves
+the zero-shot generalization of LMs by utilizing the
+retrieved information. We demonstrate that identi-
+fying LMs’ preferences to train the retriever can in
+turn bring additional evidence texts for LMs.
+###3 Method
+In this section, we first introduce the preliminaries
+of the dense retrieval and the retrieval-augmented
+LM (§ 3.1), then propose our augmentation-
+adapted retriever (§ 3.2).
+###3.1 Preliminaries
+Retrieval-augmented LM (Guu et al., 2020; Lewis
+et al., 2020) is a type of LM that leverages external
+information to improve its performance. It retrieves
+242
+relevant documents from a corpus using a retriever,
+and then utilizes the documents to enhance its lan-
+guage generation capabilities.
+The objective of the retriever is to find an aug-
+mentation document set Da from a corpus C that
+helps the LM handle a given query q. Previous
+researches (Karpukhin et al., 2020; Xiong et al.,
+2021) concentrate primarily on the dense retrieval
+system that searches in the dense vector space since
+dense retrieval usually performs more accurately
+and efficiently than sparse one.
+A dense retrieval model first represents q and
+the document d into an embedding space using a
+pre-trained encoder g,
+q = g(q); d = g(d), d ∈ C,
+(1)
+and match their embeddings by dot product func-
+tion f, which supports fast approximate nearest
+neighbor search (ANN) (André et al., 2016; John-
+son et al., 2021). We then define Da that contains
+top-N retrieved documents as:
+Da = {da
+1 . . . da
+N} = ANNN
+f(q,◦).
+(2)
+For the LM backbones, the decoder-only and
+the encoder-decoder models are the two primary
+choices of the retrieval-augmented LMs (Izacard
+and Grave, 2021b; Yu et al., 2023).
+Given a decoder-only LM like GPT-3 (Brown
+et al., 2020), the LM input can be a simple concate-
+nation of the query and all the augmentation docu-
+ments {da
+1 . . . da
+N}. Then, the LM will generate the
+answer based on the inputs auto-regressively.
+For an encoder-decoder LM like T5 (Raffel et al.,
+2020), taking simple concatenation as the encoder
+input may still be effective. However, this method
+may not scale to a large volume of documents due
+to the quadratic self-attention computation associ-
+ated with the number of documents. To aggregate
+multiple documents more efficiently, Izacard and
+Grave (2021b) propose the fusion-in-decoder (FiD)
+mechanism, which soon becomes the mainstream
+in the development of encoder-decoder retrieval-
+augmented LMs. It first encodes each concatena-
+tion of the (da
+i , q) pair separately and then lets the
+decoder attend to all parts:
+FiD(q) = Dec(Enc(da
+1⊕q) . . . Enc(da
+N ⊕q)). (3)
+In this way, the encoder computes self-attention
+over one document at a time so that the compu-
+tational cost can grow linearly with the number
+of documents. Furthermore, FiD cross-attention
+is found effective in estimating the relative im-
+portance of the augmentation documents from
+Negatives 
+ANCE Sampling 
+Positives 
+Ground Truth  
+Top-K FiDAtt 
+  
+  
+ 
+Pre-Trained Retriever
+Q + D1
+...
+Enc
+Enc
+Dec
+Enc
+...
+Source LM
+Fusion-in-Decoder
+Retrieve 
+N Docs 
+Source Task
+Q + D2
+Q + DN
+Augmentation-Adapted Retriever
+Target LMs Target Tasks
+Generic  
+Plug-In 
+Figure 2: Illustration of augmentation-adapted retriever.
+the LM’s perspective (Izacard and Grave, 2021a).
+Therefore, soft FiD distillation (Izacard and Grave,
+2021a; Izacard et al., 2022; Shi et al., 2023), which
+minimizes the KL-divergence between retrieval
+likelihood and LM likelihood, is often used to train
+the retriever and the LM end-to-end.
+###3.2 Augmentation-adapted Retriever
+Due to the emerging real-world demands and
+the limitations of black-box APIs, fine-tuning
+retrieval-augmented LM for each possible down-
+stream task can be infeasible. Hence, we intro-
+duce Augmentation-Adapted Retriever (AAR) as a
+generic plug-in for black-box LMs. As illustrated
+in Figure 2, AAR can learn the preferences of LMs
+without the need for fine-tuning them.
+Specifically, we utilize an encoder-decoder LM
+as source LM (Ls) to provide LM-preferred signals
+on a source task (Ts) for fine-tuning a pre-trained
+retriever. Then, we plug the fine-tuned retriever
+into unseen target LM (Lt) on a set of target tasks
+(Tt) non-intersecting with Ts.
+Our training method starts from a source task Ts,
+where we aggregate the source LM Ls’s average
+FiD cross-attention (FiDAtt) scores Sa
+i correspond-
+ing to document da
+i from the first decoder token
+over all the layers, all the heads and all the input
+tokens t of da
+i ⊕ q:
+Sa
+i =
 1
-2
-3
-4
-5
-86
-87
-Step
-DS
-(c) Dice score for abdominal CT
-1
-2
-3
-4
-5
-6.5
-7
-Step
-HD
-(d) Hausdorff distance for abdominal CT
-1
-2
-3
-4
-5
-83
-84
-85
-Step
-DS
-(e) Dice score for prostate MR
-1
-2
-3
-4
-5
-4.4
-4.6
-4.8
-5
-5.2
-Step
-HD
-(f) Hausdorff distance for prostate MR
-1
-2
-3
-4
-5
-88
-90
-92
-Step
-DS
-(g) Dice score for brain MR
-1
-2
-3
-4
-5
-7
-8
-9
-10
-Step
-HD
-(h) Hausdorff distance for brain MR
-Figure 3: Segmentation performance per step. “Diff.” represents standard diffusion.
-“Diff. sc. xt” and “Diff. sc. xt+1” represents self-conditioning from Chen et al. (2022b)
-and Watson et al. (2023), respectively. “Diff. rec. xt+1” and “Diff. rec. xT ” represents
-recycling from Fu et al. (2023) and the proposed recycling in this work, respectively. The
-sampler is DDPM.
-520
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-Ground Truth
-Step 1
-Diff.
-Diff. sc.
-Diff. sc.
-Step 2
-Step 3
-Step 4
-Step 5
-Non-diffusion
-Diff. rec.
-Diff. rec.
-   DS: 71.08
-   HD: 40.36
-   DS: 74.83
-   HD: 69.09
-   DS: 67.49
-   HD: 82.81
-   DS: 75.19
-   HD: 76.34
-   DS: 66.64
-   HD: 83.89
-   DS: 66.85
-   HD: 83.69
-   DS: 79.56
-   HD: 21.24
-   DS: 77.18
-   HD: 30.00
-   DS: 77.58
-   HD: 35.67
-   DS: 76.79
-   HD: 31.00
-   DS: 76.79
-   HD: 31.00
-   DS: 66.44
-   HD: 46.34
-   DS: 65.91
-   HD: 47.78
-   DS: 74.75
-   HD: 44.74
-   DS: 65.69
-   HD: 48.53
-   DS: 65.68
-   HD: 48.53
-   DS: 62.75
-   HD: 56.38
-   DS: 60.69
-   HD: 60.02
-   DS: 66.30
-   HD: 60.43
-   DS: 60.15
-   HD: 61.03
-   DS: 60.17
-   HD: 60.81
-   DS: 82.56
-   HD: 45.02
-   DS: 87.12
-   HD: 34.54
-   DS: 75.63
-   HD: 56.54
-   DS: 92.66
-   HD: 17.11
-   DS: 90.84
-   HD: 24.06
-Figure 4: Diffusion training strategies comparison on muscle ultrasound example.
-“Diff.” represents standard diffusion. “Diff. sc. xt” and “Diff. sc. xt+1” represents self-
-conditioning from Chen et al. (2022b) and Watson et al. (2023), respectively. “Diff. rec. xt+1”
-and “Diff. rec. xT ” represents recycling from Fu et al. (2023) and the proposed recycling in
-this work, respectively. The Dice score (DS) and Hausdorff distance (HD) for each sample
-are labeled at the bottom. While different diffusion models have similar performance on the
-first step, the proposed method (last row) can refine the segmentation mask.
-521
-
-Fu et al.
-initial predictions from the trained models are dissimilar from ground truths. This results in
-an out-of-sample inference and therefore a declining performance. In contrast, the proposed
-method ingests model predictions for both the training and inference phases without the bias
-toward ground truth. These observations reaffirm the importance and benefits of harmonizing
-the training and inference processes. This alignment is crucial to mitigate data leakage,
-prevent overfitting, and help generalization.
-6.2 Comparison to Non-diffusion Models
-Table 2: Segmentation performance comparison to non-diffusion models
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-Muscle Ultrasound
-Diff. rec. 
-- No diff.
-Diff. rec. 
-- No diff.
-Ensemble - No diff.
-Ensemble - No diff.
-Abdominal CT
-Prostate MR
-Brain MR
-Figure 5: Balnd-altmann plot for comparison of diffusion and ensemble models
-against non-diffusion models. “No diff.” represents non-diffusion model. “Diff. rec. xT ”
-represents the diffusion model with proposed recycling. “Ensemble” represents ensembled
-model by averaging predicted probabilities. The inference sampler is DDPM. DS and HD
-represents Dice score and Hausdorff distance, respectively. The differences are calculated
-against non-diffusion models. Positive dice score difference and negative Hausdorff distances
-indicate improvements. The green solid lines indicates the average difference and the dash
-lines are mean ±1.96 standard deviation of the difference. The percentage indicates the
-number of samples having better performance against non-diffusion baseline. Ensemble
-models brings an improvement of Dice score for 18.44%−40.00% samples across applications.
-523
-
-Fu et al.
-No diff.
-Ensemble
-Diff. rec.
-DS: 84.26
-HD: 5.16
-DS: 92.34
-HD: 3.18
-DS: 83.88
-HD: 9.76
-DS: 83.57
-HD: 8.02
-DS: 80.21
-HD: 4.47
-DS: 93.09
-HD: 3.01
-DS: 85.85
-HD: 5.22
-DS: 79.80
-HD: 13.32
-DS: 84.10
-HD: 7.69
-DS: 85.68
-HD: 4.81
-DS: 93.49
-HD: 2.84
-DS: 85.35
-HD: 5.32
-(a) Structures in abdominal CT.
-No diff.
-Diff. rec.
-DS: 78.66
-HD: 8.73
-DS: 81.14
-HD: 3.21
-DS: 87.29
-HD: 3.50
-DS: 82.91
-HD: 4.95
-DS: 84.00
-HD: 4.30
-DS: 85.49
-HD: 3.18
-DS: 84.19
-HD: 3.94
-DS: 80.68
-HD: 5.15
-Ensemble
-DS: 80.77
-HD: 5.19
-DS: 84.40
-HD: 3.180
-DS: 86.55
-HD: 3.68
-DS: 82.58
-HD: 4.96
-(b) Structures in prostate MR.
-Figure 6: Segmentation error of non-diffusion-based and diffusion-based models.
-“No diff.” represents non-diffusion model. “Diff. rec. xT ” represents the diffusion model
-with proposed recycling. “Ensemble” represents ensembled model by averaging predicted
-probabilities. The ground truth segmentation is visualised. For each point on the surface, the
-distance to the surface of predicted segmentation is calculated and displayed with red color.
-The Dice score (DS) and Hausdorff distance (HD) for each sample are labeled at bottom.
-524
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-significant across all four data sets (p = 0.037 for brain MR and p < 0.001 for other data
-sets). Especially, Figure 5 shows that the ensemble model reached a higher Dice score
-compared to non-diffusion models on 70.83%, 91.11%, 89.02%, and 64.54% samples in the
-test set for muscle ultrasound, abdominal CT, prostate MR data and brain MR, respectively.
-These scores marked an absolute increase of 19.36%, 40.00%, 28.04%, and 19.44% compared
-to the diffusion model alone. Moreover, Abdominal CT and prostate MR are two data
-sets with multiple classes and their per-class segmentation performances are summarised
-in Table 8 and Table 9 in Appendix F.1, respectively. Upon comparing diffusion models and
-non-diffusion models, neither consistently outperformed the other across all classes. However,
-the ensemble model reached the best performance across all classes and the improvement
-of Dice score is significant for 13 out of 15 classes in Abdominal CT data and all classes
-in prostate MR data (all p-values <= 0.01, excluding Spleen p = 0.06 and Gall bladder
-p = 0.876). Multiple examples have also been visualized in Figure 6 and Figure 11 for the
-segmentation error.
-We highlight that the value of the competitive performance from alternative methods, in
-particular a different class of generative model-based approaches, is beyond the replacement of
-current segmentation algorithms for specific potential applications. Our results demonstrate a
-consistent improvement by combining diffusion and non-diffusion models across applications,
-even when they yielded a similar performance individually. This is one of the possible
-potential uses of the proposed improved diffusion models in addition to the well-established
-non-diffusion baseline. Future research could explore application-specific tuning for further
-performance improvements.
-6.3 Ablation Studies
-6.3.1 Number of sampling steps
-Diffusion models were trained using a thousand steps, yet employing the same number of
-steps for inference can be cost-prohibitive, particularly for processing 3D image volumes. As
-a result, practical inference commonly utilizes a condensed schedule with a limited number
-of steps. While this approach reduces computational expenses, the resulting sample quality
-might be compromised. An ablation study of the numbers of timesteps during inference
-has therefore been performed across data sets with the proposed recycling-based diffusion
-model. DDPM sampler was used. The results have been summarised in Table 3. Notably,
-
-Fu et al.
-Table 3: Diffusion with different number of sampling steps
-
-Table 4: Diffusion model performance across different inference seeds
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-diminished during the sampling process for both metrics. In other words, despite different
-initial predictions, the model’s predictions gradually converge as the difference across seeds
-decreases. Moreover, the relative magnitude of the mean ∆ Hausdorff distance (e.g. 1.82
-at the last step for muscle ultrasound represents around 5% fluctuation compared to 35.37,
-the mean Hausdorff distance to ground truth) was larger than the relative magnitude for
-Dice score (e.g. 0.0051 at the last step for muscle ultrasound was around 0.006% fluctuation
-compared to 88.23 the mean Hausdorff distance to ground truth). We hypothesize that
-the variation among predictions may predominantly revolve around local refinements in
-mask boundaries, as opposed to significant alterations like expansion or contraction of
-foreground areas. This may open a direction for further improving diffusion training: instead
-of performing independent noising per pixel/voxel results in fragmented and disjointed masks,
-the noising can be morphology-informed such that the noise-corrupted masks expand or
-contract the foreground with continuous boundaries.
-6.3.3 Transformer
-Table 5: Segmentation performance without Transformer
-
-Fu et al.
-of the Transformer component brought improvement in Dice score across all applications
-(p < 0.001 for muscle ultrasound; p >= 0.05 for abdominal CT; p = 0.001 for prostate
-MR; and p = 0.0178 for brain MR), making this architecture the stronger reference model.
-For diffusion, significantly higher Dice scores have been observed for abdominal CT data
-(p < 0.001), and the differences were not significant for other applications (p >= 0.05).
-6.3.4 Length of training noise schedule
-It’s worth noting that Fu et al. (2023) recommended incorporating a shortened variance
-schedule during training, mirroring that used during inference, in addition to the recycling
-technique. This modification resulted in enhanced performance for every training strategy
-on the muscle ultrasound data set (as detailed in Table 10a). However, this adaptation
-did not yield enhancements for the proposed training strategies (“Diff. rec. xT ”) in the
-abdominal CT data set (as depicted in Table 10b). Moreover, not all differences observed were
-statistically significant. This may suggest that the advantage of the modified training variance
-schedule may be application-dependent and sensitive to the change of model architectures
-and hyper-parameters. In this work, the variance schedule was maintained at 1001 steps.
-7. Conclusion
-In this research, we have proposed a novel training strategy for diffusion-based segmentation
-models. The aim is to remove the dependency on ground truth masks during denoising
-training. In contrast to the standard diffusion-based segmentation models and those employing
-self-conditioning or alternative recycling techniques, our approach consistently maintains or
-enhances segmentation performance throughout progressive inference processes. Through
-extensive experiments across four medical imaging data sets with different dimensionalities
-and modalities, we demonstrated statistically significant improvement against all diffusion
-baseline models for both DDPM and DDIM samplers.
-Our analysis for the first time
-identified a common limitation of existing diffusion model training for segmentation tasks.
-The use of ground truth data for denoising training leads to data leakage. By utilizing the
-model’s prediction at the initial step instead, we align the training process with inference
-procedures, effectively reducing over-fitting and promoting better generalization. While
-existing diffusion models underperformed non-diffusion-based segmentation model baselines,
-our innovative recycling training strategies effectively bridged the performance gap. This
-enhancement allowed diffusion models to attain comparable performance levels. To the best of
-our knowledge, this is the first time diffusion models have achieved such parity in performance
-while maintaining identical architecture and compute budget. By ensembling the diffusion
-and non-diffusion models, constant and significant improvements have been observed across
-all data sets, demonstrating one of its potential values. Nevertheless, challenges remain
-on the road to advancing diffusion-based segmentation models further. Future work could
-explore discrete diffusion models that are tailored for categorical data or implement diffusion
-in latent space to further reduce compute costs. Although the presented experimental results
-primarily demonstrated methodological development, the fact that these were obtained on
-four large clinical data sets represents a promising step toward real-world applications. We
-would like to argue the potential importance of the reported development, which may lead to
-better clinical outcomes and improved patient care in respective applications. For example,
-528
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-avoiding surrounding healthy structures may be sensitive to their localization in planning
-imaging, in both the abdominal CT and prostate MR tasks. This sensitivity can be high and
-nonlinear therefore arguably a perceived marginal improvement might benefit those with
-smaller targets, such as those in liver resection and focal therapy of prostate cancer, or highly
-variable ultrasound imaging guidance.
-Acknowledgments
-This work was supported by the EPSRC grant (EP/T029404/1), the Wellcome/EPSRC
-Centre for Interventional and Surgical Sciences (203145Z/16/Z), the International Alliance
-for Cancer Early Detection, an alliance between Cancer Research UK (C28070/A30912,
-C73666/A31378), Canary Center at Stanford University, the University of Cambridge, OHSU
-Knight Cancer Institute, University College London and the University of Manchester, and
-Cloud TPUs from Google’s TPU Research Cloud (TRC).
-Ethical Standards
-The work follows appropriate ethical standards in conducting research and writing the
-manuscript, following all applicable laws and regulations regarding treatment of animals or
-human subjects.
-Conflicts of Interest
-We declare we do not have conflicts of interest.
-References
-Tomer Amit, Eliya Nachmani, Tal Shaharbany, and Lior Wolf. Segdiff: Image segmentation
-with diffusion probabilistic models. arXiv preprint arXiv:2112.00390, 2021.
-Jacob Austin, Daniel D Johnson, Jonathan Ho, Daniel Tarlow, and Rianne Van Den Berg.
-Structured denoising diffusion models in discrete state-spaces.
-Advances in Neural
-Information Processing Systems, 34:17981–17993, 2021.
-Ujjwal Baid, Satyam Ghodasara, Suyash Mohan, Michel Bilello, Evan Calabrese, Errol Colak,
-Keyvan Farahani, Jayashree Kalpathy-Cramer, Felipe C Kitamura, Sarthak Pati, et al. The
-rsna-asnr-miccai brats 2021 benchmark on brain tumor segmentation and radiogenomic
-classification. arXiv preprint arXiv:2107.02314, 2021.
-Florentin Bieder, Julia Wolleb, Alicia Durrer, Robin Sandkühler, and Philippe C Cattin.
-Diffusion models for memory-efficient processing of 3d medical images. arXiv preprint
-arXiv:2303.15288, 2023.
-Tao Chen, Chenhui Wang, and Hongming Shan. Berdiff: Conditional bernoulli diffusion
-model for medical image segmentation. arXiv preprint arXiv:2304.04429, 2023.
-529
-
-Fu et al.
-Ting Chen, Lala Li, Saurabh Saxena, Geoffrey Hinton, and David J Fleet. A generalist frame-
-work for panoptic segmentation of images and videos. arXiv preprint arXiv:2210.06366,
-2022a.
-Ting Chen, Ruixiang Zhang, and Geoffrey Hinton. Analog bits: Generating discrete data
-using diffusion models with self-conditioning. arXiv preprint arXiv:2208.04202, 2022b.
-Prafulla Dhariwal and Alexander Nichol. Diffusion models beat gans on image synthesis.
-Advances in Neural Information Processing Systems, 34:8780–8794, 2021.
-Zolnamar Dorjsembe, Sodtavilan Odonchimed, and Furen Xiao. Three-dimensional medical
-image synthesis with denoising diffusion probabilistic models. In Medical Imaging with
-Deep Learning, 2022.
-Yunguan Fu, Yiwen Li, Shaheer U Saeed, Matthew J Clarkson, and Yipeng Hu. Importance of
-aligning training strategy with evaluation for diffusion models in 3d multiclass segmentation.
-arXiv preprint arXiv:2303.06040, 2023.
-Ian Goodfellow, Jean Pouget-Abadie, Mehdi Mirza, Bing Xu, David Warde-Farley, Sher-
-jil Ozair, Aaron Courville, and Yoshua Bengio.
-Generative adversarial networks.
-Communications of the ACM, 63(11):139–144, 2020.
-Shuyang Gu, Dong Chen, Jianmin Bao, Fang Wen, Bo Zhang, Dongdong Chen, Lu Yuan,
-and Baining Guo.
-Vector quantized diffusion model for text-to-image synthesis.
-In
-Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition,
-pages 10696–10706, 2022.
-Xutao Guo, Yanwu Yang, Chenfei Ye, Shang Lu, Yang Xiang, and Ting Ma. Accelerating
-diffusion models via pre-segmentation diffusion sampling for medical image segmentation.
-arXiv preprint arXiv:2210.17408, 2022.
-Xiaochuang Han, Sachin Kumar, and Yulia Tsvetkov. Ssd-lm: Semi-autoregressive simplex-
-based diffusion language model for text generation and modular control. arXiv preprint
-arXiv:2210.17432, 2022.
-Jonathan Ho and Tim Salimans.
-Classifier-free diffusion guidance.
-arXiv preprint
-arXiv:2207.12598, 2022.
-Jonathan Ho, Ajay Jain, and Pieter Abbeel.
-Denoising diffusion probabilistic models.
-Advances in Neural Information Processing Systems, 33:6840–6851, 2020.
-Emiel Hoogeboom, Didrik Nielsen, Priyank Jaini, Patrick Forré, and Max Welling. Argmax
-flows and multinomial diffusion: Learning categorical distributions. Advances in Neural
-Information Processing Systems, 34:12454–12465, 2021.
-Dewei Hu, Yuankai K Tao, and Ipek Oguz. Unsupervised denoising of retinal oct with
-diffusion probabilistic model. In Medical Imaging 2022: Image Processing, volume 12032,
-pages 25–34. SPIE, 2022.
-530
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-Aapo Hyvärinen and Peter Dayan. Estimation of non-normalized statistical models by score
-matching. Journal of Machine Learning Research, 6(4), 2005.
-Yuanfeng Ji, Haotian Bai, Jie Yang, Chongjian Ge, Ye Zhu, Ruimao Zhang, Zhen Li, Lingyan
-Zhang, Wanling Ma, Xiang Wan, et al. Amos: A large-scale abdominal multi-organ
-benchmark for versatile medical image segmentation. arXiv preprint arXiv:2206.08023,
-2022.
-Amirhossein Kazerouni, Ehsan Khodapanah Aghdam, Moein Heidari, Reza Azad, Mohsen
-Fayyaz, Ilker Hacihaliloglu, and Dorit Merhof. Diffusion models in medical imaging: A
-comprehensive survey. Medical Image Analysis, page 102846, 2023.
-Firas Khader, Gustav Mueller-Franzes, Soroosh Tayebi Arasteh, Tianyu Han, Christoph
-Haarburger, Maximilian Schulze-Hagen, Philipp Schad, Sandy Engelhardt, Bettina Baessler,
-Sebastian Foersch, et al. Medical diffusion–denoising diffusion probabilistic models for 3d
-medical image generation. arXiv preprint arXiv:2211.03364, 2022.
-Boah Kim, Inhwa Han, and Jong Chul Ye. Diffusemorph: unsupervised deformable image
-registration using diffusion model. In European Conference on Computer Vision, pages
-347–364. Springer, 2022.
-Diederik Kingma, Tim Salimans, Ben Poole, and Jonathan Ho. Variational diffusion models.
-Advances in neural information processing systems, 34:21696–21707, 2021.
-Alexander Kirillov, Eric Mintun, Nikhila Ravi, Hanzi Mao, Chloe Rolland, Laura Gustafson,
-Tete Xiao, Spencer Whitehead, Alexander C Berg, Wan-Yen Lo, et al. Segment anything.
-arXiv preprint arXiv:2304.02643, 2023.
-Benedikt Kolbeinsson and Krystian Mikolajczyk. Multi-class segmentation from aerial views
-using recursive noise diffusion. arXiv preprint arXiv:2212.00787, 2022.
-Zeqiang Lai, Yuchen Duan, Jifeng Dai, Ziheng Li, Ying Fu, Hongsheng Li, Yu Qiao, and
-Wenhai Wang. Denoising diffusion semantic segmentation with mask prior modeling. arXiv
-preprint arXiv:2306.01721, 2023.
-Xiang Li, John Thickstun, Ishaan Gulrajani, Percy S Liang, and Tatsunori B Hashimoto.
-Diffusion-lm improves controllable text generation.
-Advances in Neural Information
-Processing Systems, 35:4328–4343, 2022a.
-Yiwen Li, Yunguan Fu, Iani Gayo, Qianye Yang, Zhe Min, Shaheer Saeed, Wen Yan, Yipei
-Wang, J Alison Noble, Mark Emberton, et al. Prototypical few-shot segmentation for cross-
-institution male pelvic structures with spatial registration. arXiv preprint arXiv:2209.05160,
-2022b.
-Luping Liu, Yi Ren, Zhijie Lin, and Zhou Zhao. Pseudo numerical methods for diffusion
-models on manifolds. arXiv preprint arXiv:2202.09778, 2022.
-Zhaoyang Lyu, Xudong Xu, Ceyuan Yang, Dahua Lin, and Bo Dai. Accelerating diffusion
-models via early stop of the diffusion process. arXiv preprint arXiv:2205.12524, 2022.
-531
-
-Fu et al.
-Francesco Marzola, Nens van Alfen, Jonne Doorduin, and Kristen M Meiburger. Deep
-learning segmentation of transverse musculoskeletal ultrasound images for neuromuscular
-disease assessment. Computers in Biology and Medicine, 135:104623, 2021.
-Puria Azadi Moghadam, Sanne Van Dalen, Karina C Martin, Jochen Lennerz, Stephen
-Yip, Hossein Farahani, and Ali Bashashati. A morphology focused diffusion probabilistic
-model for synthesis of histopathology images. In Proceedings of the IEEE/CVF Winter
-Conference on Applications of Computer Vision, pages 2000–2009, 2023.
-Alexander Quinn Nichol and Prafulla Dhariwal. Improved denoising diffusion probabilistic
-models. In International Conference on Machine Learning, pages 8162–8171. PMLR, 2021.
-Walter HL Pinaya, Mark S Graham, Robert Gray, Pedro F Da Costa, Petru-Daniel Tudosiu,
-Paul Wright, Yee H Mah, Andrew D MacKinnon, James T Teo, Rolf Jager, et al. Fast unsu-
-pervised brain anomaly detection and segmentation with diffusion models. In International
-Conference on Medical Image Computing and Computer-Assisted Intervention, pages 705–
-714. Springer, 2022a.
-Walter HL Pinaya, Petru-Daniel Tudosiu, Jessica Dafflon, Pedro F da Costa, Virginia
-Fernandez, Parashkev Nachev, Sebastien Ourselin, and M Jorge Cardoso. Brain imaging
-generation with latent diffusion models. arXiv preprint arXiv:2209.07162, 2022b.
-Aimon Rahman, Jeya Maria Jose Valanarasu, Ilker Hacihaliloglu, and Vishal M Patel.
-Ambiguous medical image segmentation using diffusion models. In Proceedings of the
-IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 11536–11546,
-2023.
-Aditya Ramesh, Prafulla Dhariwal, Alex Nichol, Casey Chu, and Mark Chen. Hierarchical
-text-conditional image generation with clip latents. arXiv preprint arXiv:2204.06125, 2022.
-Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Ommer.
-High-resolution image synthesis with latent diffusion models.
-In Proceedings of the
-IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 10684–10695,
-2022.
-Shaheer U. Saeed, Tom Syer, Wen Yan, Qianye Yang, Mark Emberton, Shonit Punwani,
-Matthew J. Clarkson, Dean C. Barratt, and Yipeng Hu. Bi-parametric prostate mr
-image synthesis using pathology and sequence-conditioned stable diffusion. arXiv preprint
-arXiv:2303.02094, 2023.
-Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli.
-Deep
-unsupervised learning using nonequilibrium thermodynamics. In International Conference
-on Machine Learning, pages 2256–2265. PMLR, 2015.
-Jiaming Song, Chenlin Meng, and Stefano Ermon. Denoising diffusion implicit models. arXiv
-preprint arXiv:2010.02502, 2020a.
-Yang Song and Stefano Ermon. Generative modeling by estimating gradients of the data
-distribution. Advances in neural information processing systems, 32, 2019.
-532
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-Yang Song and Stefano Ermon. Improved techniques for training score-based generative
-models. Advances in neural information processing systems, 33:12438–12448, 2020.
-Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon,
-and Ben Poole. Score-based generative modeling through stochastic differential equations.
-arXiv preprint arXiv:2011.13456, 2020b.
-Robin Strudel, Corentin Tallec, Florent Altché, Yilun Du, Yaroslav Ganin, Arthur Mensch,
-Will Grathwohl, Nikolay Savinov, Sander Dieleman, Laurent Sifre, et al. Self-conditioned
-embedding diffusion for text generation. arXiv preprint arXiv:2211.04236, 2022.
-Pascal Vincent. A connection between score matching and denoising autoencoders. Neural
-computation, 23(7):1661–1674, 2011.
-Hefeng Wang, Jiale Cao, Rao Muhammad Anwer, Jin Xie, Fahad Shahbaz Khan, and Yanwei
-Pang. Dformer: Diffusion-guided transformer for universal image segmentation. arXiv
-preprint arXiv:2306.03437, 2023.
-Risheng Wang, Tao Lei, Ruixia Cui, Bingtao Zhang, Hongying Meng, and Asoke K Nandi.
-Medical image segmentation using deep learning: A survey. IET Image Processing, 16(5):
-1243–1267, 2022.
-Joseph L Watson, David Juergens, Nathaniel R Bennett, Brian L Trippe, Jason Yim, Helen E
-Eisenach, Woody Ahern, Andrew J Borst, Robert J Ragotte, Lukas F Milles, et al. De
-novo design of protein structure and function with rfdiffusion. Nature, pages 1–3, 2023.
-Julia Wolleb, Florentin Bieder, Robin Sandkühler, and Philippe C Cattin. Diffusion models
-for medical anomaly detection. In International Conference on Medical image computing
-and computer-assisted intervention, pages 35–45. Springer, 2022a.
-Julia Wolleb, Robin Sandkühler, Florentin Bieder, Philippe Valmaggia, and Philippe C
-Cattin. Diffusion models for implicit image segmentation ensembles. In International
-Conference on Medical Imaging with Deep Learning, pages 1336–1348. PMLR, 2022b.
-Junde Wu, Huihui Fang, Yu Zhang, Yehui Yang, and Yanwu Xu. Medsegdiff: Medical image
-segmentation with diffusion probabilistic model. arXiv preprint arXiv:2211.00611, 2022.
-Junde Wu, Rao Fu, Huihui Fang, Yu Zhang, and Yanwu Xu. Medsegdiff-v2: Diffusion based
-medical image segmentation with transformer. arXiv preprint arXiv:2301.11798, 2023.
-Zhaohu Xing, Liang Wan, Huazhu Fu, Guang Yang, and Lei Zhu. Diff-unet: A diffusion
-embedded network for volumetric segmentation. arXiv preprint arXiv:2303.10326, 2023.
-Yijun Yang, Huazhu Fu, Angelica Aviles-Rivero, Carola-Bibiane Schönlieb, and Lei Zhu.
-Diffmic: Dual-guidance diffusion network for medical image classification. arXiv preprint
-arXiv:2303.10610, 2023.
-Sean I Young, Adrian V Dalca, Enzo Ferrante, Polina Golland, Bruce Fischl, and Juan Eugenio
-Iglesias. Sud: Supervision by denoising for medical image segmentation. arXiv preprint
-arXiv:2202.02952, 2022.
-533
-
-Fu et al.
-Lukas Zbinden, Lars Doorenbos, Theodoros Pissas, Raphael Sznitman, and Pablo Márquez-
-Neila. Stochastic segmentation with conditional categorical diffusion models. arXiv preprint
-arXiv:2303.08888, 2023.
-Huangjie Zheng, Pengcheng He, Weizhu Chen, and Mingyuan Zhou. Truncated diffusion
-probabilistic models. stat, 1050:7, 2022.
-534
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-Appendix A. Denoising Diffusion Probabilistic Model
-We review the formulation of denoising diffusion probabilistic models (DDPM) from Sohl-
-Dickstein et al. (2015); Ho et al. (2020); Nichol and Dhariwal (2021).
-A.1 Definition
-xT GGGB
-F GGG · · · GGGB
-F GGG xt
-pθ(xt−1 | xt)
-GGGGGGGGGGGGGGGGGB
-F GGGGGGGGGGGGGGGGG
-q(xt | xt−1)
-xt−1 GGGB
-F GGG · · · GGGB
-F GGG x0
-Consider a continuous diffusion process (also named forward process or noising process):
-given a data point x0 ∼ q(x0) in RD, we add noise to xt for t = 1, · · · , T with the following
-multivariate normal distribution:
-q(xt | xt−1) = N(xt;
-p
-1 − βt xt−1, βtI)
-where βt ∈ [0, 1] is a variance schedule. Given sufficiently large T and a well-defined variance
-schedule, the distribution of xT approximates an isotropic multivariate normal distribution.
-q(xt | x0) → N(xt; 0, I)
-Therefore, we can define a reverse process (also named denoising process): given a sample
-xT ∼ N(xT ; 0, I), we denoise the data using neural networks µθ : RD → RD and Σθ : RD →
-RD×D as follows:
-pθ(xt−1 | xt) = N(xt−1; µθ(xt, t), Σθ(xt, t))
-In this work, an isotropic variance is assumed with Σθ(xt, t) = σ2
-t I, such that
-pθ(xt−1 | xt) = N(xt−1; µθ(xt, t), σ2
-t I)
-A.2 Variational Lower Bound
-Consider z = x1:T | x0 as latent variables for x0, we can derive the variational lower bound
-(VLB) as follows:
-log pθ(x0) =DKL(q(z) ∥ pθ(z | x0)) + Eq(z)
-
-log pθ(x0, z)
-q(z)
-
-≥ Eq(z)
-
-log pθ(x0, z)
-q(z)
-
-= −
-
-Eq(x1|x0) L0 +
-T
+ln ∗ hn ∗ tn
 X
-t=2
-Eq(xt|x0) Lt−1 + LT
-
-where
-L0 = − log pθ(x0 | x1)
-(reconstruction loss)
-Lt−1 = DKL(q(xt−1 | xt, x0)∥pθ(xt−1 | xt))
-(diffussion loss)
-LT = DKL(q(xT | x0)) ∥ pθ(xT ).
-(prior loss)
-535
-
-Fu et al.
-A.3 Diffusion Loss
-In particular, we can derive the closed form Lt−1 with
-q(xt | x0) = N(xt; √¯αt x0, (1 − ¯αt)I)
-q(xt−1 | xt, x0) = N(xt−1; ˜µ(xt, x0), ˜βtI)
-where
-αt = 1 − βt
-¯αt =
-tY
-s=1
-αs
-˜µ(xt, x0) =
-√¯αt−1βt
-1 − ¯αt
-x0 +1 − ¯αt−1
-1 − ¯αt
-√αt xt,
+layers
+X
+heads
+X
+t∈da
+i ⊕q
+FiDAtt(FiD(q)). (4)
+where ln, hn, tn are the numbers of the layers, the
+heads and the input tokens.
+To make the training process more robust, we uti-
+lize the FiDAtt scores to annotate the LM-preferred
+positive documents in a discrete way:
+Da+ = Dh+ ∪ Top-KSa
+i ,Da,
+(5)
+242
+where Dh+ is the human-preferred positive doc-
+ument set (i.e., ground truth) on Ts. Top-KSa
+i ,Da
+means the documents with the top-k average Fi-
+DAtt scores Sa
+i in the retrieved document set Da.
+Then, we sample hard negatives following
+ANCE (Xiong et al., 2021) and formulate the train-
+ing loss L of the retriever as:
+D− = ANNM
+f(q,◦)\Da+,
 (6)
-˜βt = 1 − ¯αt−1
-1 − ¯αt
-βt.
-A.3.1 Noise Prediction Loss (ϵ-parameterization)s
-Consider the reparameterization in Ho et al. (2020),
-xt(x0, ϵ) = √¯αt x0 +
-√
-1 − ¯αt ϵ
-ϵθ(xt, t) =
-1
-√1 − ¯αt
-xt −
-√¯αt
-√1 − ¯αt
-x0
-µθ(xt, t) =
-1
-√αt
-(xt −
-βt
-√1 − ¯αt
-ϵθ(xt, t))
-We can derive a closed form of Lt−1
-Lt−1(xt, x0) =
-1
-2σ2
-t
-β2
-t
-αt(1 − ¯αt)∥ ϵ − ϵθ ∥2
-2 + C
-If σ2
-t = ˜βt = 1−¯αt−1
-1−¯αt βt, using the signal-to-noise ratio (SNR) defined in Kingma et al.
-(2021), SNR(t) =
-¯αt
-1−¯αt , the loss can be derived as
-Lt−1(xt, x0) = (SNR(t − 1)
-SNR(t)
-− 1)∥ ϵ − ϵθ ∥2
-2 + C
-A.3.2 Sample Prediction Loss (x0-parameterization)
-Similar to Eq. (6), consider the parameterization (Kingma et al., 2021),
-µθ(xt, t) =
-√¯αt−1βt
-1 − ¯αt
-x0,θ +1 − ¯αt−1
-1 − ¯αt
-√αt xt
-We can derive a closed form of Lt−1
-Lt−1(xt, x0) =
-1
-2σ2
-t
-¯αt−1β2
-t
-(1 − ¯αt)2 ∥ x0,θ − x0 ∥2
-2 + C.
-536
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-If σ2
-t = ˜βt = 1−¯αt−1
-1−¯αt βt, using the signal-to-noise ratio (SNR) defined in Kingma et al.
-(2021), SNR(t) =
-¯αt
-1−¯αt , the loss can be derived as
-Lt−1(xt, x0) = 1
-2(SNR(t − 1) − SNR(t))∥ x0,θ − x0 ∥2
-2 + C.
-A.4 Training
-Empirically, instead of using the variational lower bound, the neural network can be trained
-on one of the following simplified loss (Ho et al., 2020)
-Lsimple,ϵt(θ) = Et,x0,ϵt ∥ ϵt − ϵt,θ ∥2
-2 = Et,x0,ϵt L(ϵt, ϵt,θ), (ϵ -parameterization)
-Lsimple,x0(θ) = Et,x0,ϵt ∥ x0 − x0,θ ∥2
-2 = Et,x0,ϵt L(x0, x0,θ). (x0 -parameterization)
-with t uniformly sampled from 1 to T and ϵt ∼ N(0, I). L(·, ·) is a loss function in the
-space of x. With the importance sampling proposed in Nichol and Dhariwal (2021), t can be
-sampled with a probability proportional to Ex0,xt L(x0, ˆx0). In other words, a time step t is
-sampled more often if the loss is larger.
-As the previous work (Fu et al., 2023) has extensively compared the ϵ-parameterization
-and x0-parameterization, as well as the benefits of including Dice loss, in this work, we
-use x0-parameterization with a weighted sum of cross-entropy and foreground-only Dice
-loss Kirillov et al. (2023).
-A.5 Variance Resampling
-Given a variance schedule {βt}T
-t=1 (e.g. T = 1001), a subsequence {βk}K
-k=1 (e.g. K =
-5) can be sampled with {tk}K
-k=1. Following Nichol and Dhariwal (2021), we can define
-βk = 1 −
-¯αtk
-¯αtk−1 then αk = 1 − βk and ¯αk = Qk
-s=1 αs can be recalculated correspondingly.
-In this work, tk is uniformly downsampled. For instance, if T = 1001 and K = 5, then
-{tk}K
-k=1 = {1, 251, 501, 751, 1001}.
-Appendix B. Denoising Diffusion Implicit Model
-Definition
-Song et al. (2020a) parameterize q(xt−1 | xt, x0) as follows, with ϵ = xt −√¯αt x0
-√1−¯αt
-,
-q(xt−1 | xt, x0) = N(xt−1; √¯αt−1 x0 +
-p
-1 − ¯αt−1 − σt ϵ, σ2
-t I).
-For any variance schedule σt, this formulation ensures q(xt | x0) = N(xt; √¯αt x0, (1 − ¯αt)I).
-Particularly, if σ2
-t = ˜βt, this represents DDPM. If σt = 0 for t > 1 and σ1 =
+L =
+X
 q
-˜β1, the model
-is deterministic and named as denoising diffusion implicit model (DDIM).
-Inference
-For DDIM, at inference time, the denoising starts with a Gaussian noise xT ∼
-N(0, I) and the data is denoised step-by-step for t = T, · · · , 1:
-pθ(xt−1 | xt) =
-(
-N(ˆx0, σ2
-1I)
-t = 1
-q(xt−1 | xt, x0,θ(xt, t))
-t > 1
-537
-
-Fu et al.
-Appendix C. Self-conditioning
-The self-conditioning methods proposed in Chen et al. (2022b) (“Diff. sc. xt” in Equation (7))
-and Watson et al. (2023) (“sc. xt+1” in Equation (8)) are illustrated below.
-xt ∼ N(xt; √¯αtx0, (1 − ¯αt)I),
-(sc. xt, step 1, sampling)
-(7a)
-ˆx0 = StopGradient(fθ(I, t, xt, 0)),
-(sc. xt, step 1, prediction)
-(7b)
-ˆx0 = Dropoutp=50%(ˆx0),
-(sc. xt, step 2, dropout)
-(7c)
-ˆx0 = fθ(I, t, xt, ˆx0),
-(sc. xt, step 2, prediction)
-(7d)
-Ldenoising(θ) = Et,x0,xt L(x0, ˆx0),
-(loss calculation)
-(7e)
-xt+1 ∼ N(xt+1; √¯αt+1 x0, (1 − ¯αt+1)I),
-(sc. xt+1, step 1, sampling)
-(8a)
-ˆx0 = StopGradient(fθ(I, t + 1, xt+1, 0)),
-(sc. xt+1, step 1, prediction)
-(8b)
-ˆx0 = Dropoutp=50%(ˆx0),
-(sc. xt+1, step 2, dropout)
-(8c)
-xt ∼ N(xt; ˜µ, ˜βt+1I),
-(sc. xt+1, step 2, sampling)
-(8d)
-˜µ =
-√¯αtβt+1
-1 − ¯αt+1
-x0 + 1 − ¯αt
-1 − ¯αt+1
-√αt+1 xt+1
-ˆx0 = fθ(I, t, xt, ˆx0),
-(sc. xt+1, step 2, prediction)
-(8e)
-Ldenoising(θ) = Et,x0,xt L(x0, ˆx0),
-(loss calculation)
-(8f)
-Appendix D. Diffusion Noise Schedule
-The noise schedule βt and √¯αt have been visualised in Figure 7. The cross entropy and dice
-score between xt and ground truth x0 have also been visualized to empirically measure the
-amount of information of ground truth x0 contained in xt.
-Appendix E. Implementation Details
-Table 6: Training Hyper-parameters
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-1
-201
-401
-601
-801
-1001
-0
-0.005
-0.01
-0.015
-0.02
-Timestep
-(a) βt
-1
-201
-401
-601
-801
-1001
-0
-0.5
-1
-Timestep
-(b) √ ¯αt
-1
-201
-401
-601
-801
-1001
-0
-0.5
-1
-1.5
-2
-Timestep
-Cross Entropy
-(c) Cross entropy
-1
-201
-401
-601
-801
-1001
-0
+X
+d+∈Da+
+X
+d−∈D−
+l(f(q, d+), f(q, d−)),
+(7)
+where M is the hyperparameter of the negative
+sampling depth and l is the standard cross entropy
+loss. After fine-tuning the retriever, we directly use
+it to augment unseen target LM Lt on each task
+from target task set Tt.
+###4 Experimental Methodologies
+In this section, we discuss our main experimental
+setup. More details can be found in Appendix A.
+###4.1 Target Tasks
+Following prior works (Chung et al., 2022; Mallen
+et al., 2022), we choose MMLU (Hendrycks et al.,
+2021) and PopQA (Mallen et al., 2022) as target
+tasks Tt.
+MMLU is a multitask language understanding
+dataset, which includes 57 multi-choice question
+answering subtasks. These subtasks can be gen-
+erally classified into four categories: humanities,
+social sciences, STEM, and other. We average the
+accuracy of the subtasks in each category to ob-
+tain the final score. We report the accuracy of the
+evaluation set in our main experiments.
+PopQA is an entity-centric question answering
+dataset concentrated on long-tail questions. We
+report the test accuracy in our main experiments.
+###4.2 Our Method
+Retrievers. We adopt two widely used retriev-
+ers to initialize AAR: ANCE initialized from
+T5Base (Raffel et al., 2020; Ge et al., 2023) and
+Contriever (Izacard et al., 2021) initialized from
+BERTBase (Devlin et al., 2019). Both of them have
+been fine-tuned on MS MARCO (Bajaj et al., 2016)
+previously. For the retrieval corpus, we choose the
+MS MARCO (Bajaj et al., 2016) for MMLU and
+the KILT-Wikipedia (Petroni et al.) for PopQA.
+Language Models. We adopt Flan-T5 (Chung
+et al., 2022) series as our backbone for encoder-
+decoder LMs and InstructGPT1 (Ouyang et al.,
+2022) as our backbone for decoder-only LMs.
+These models have been multi-task instruction-
+finetuned and are widely utilized for assessing zero-
+shot generalization (Zhou et al., 2023).
+Implementation Details. MSMARCO QA (Bajaj
+et al., 2016) is our source task Ts. It is the com-
+mon choice to train the retriever (Xin et al., 2022).
+This dataset consists of high-quality questions that
+require real-world knowledge to answer, which
+aligns strongly with our target tasks Tt and pos-
+sesses no overlap with them. Considering the im-
+plementation efficiency, we take the Flan-T5Base as
+the source LM Ls and treat the larger model as the
+target LM Lt. We directly set the total document
+number N = 10, LM-preferred document num-
+ber K = 2, and negative mining depth M = 100
+in the augmentation-adapted training. We run all
+experiments on a single A100-40G GPU.
+###4.3 Baselines
+Zero-shot Setting. We compare our method with
+the state-of-the-art zero-shot baselines. Standalone
+LMs, including Flan-T5 (Chung et al., 2022), In-
+structGPT (Ouyang et al., 2022), GAL (Taylor
+et al., 2022) and OPT-IML-Max (Iyer et al., 2022),
+are prompted by a natural language instruction that
+describes the desired task and question. Adaptive
+retrieval (Mallen et al., 2022) selectively utilizes
+non-parametric memory (retrieval augmentation)
+and parametric memory (the knowledge obtained
+from pre-training) based on questions’ popularity.
+In our main experiment, we select the optimal com-
+bination in their paper, which consists of Contriever
+as the non-parametric memory and GenRead (Yu
+et al., 2023) as the parametric memory.
+Few-shot Setting. We also include the results of
+previous few-shot models for reference. Flan-T5,
+InstructGPT, Chinchilla (Hoffmann et al., 2022)
+and OPT-IML-Max adopt few-shot demonstrations,
+which provide the LMs with a limited number of
+task examples. This enables the models to gener-
+alize from these examples and generate accurate
+responses (Gao et al., 2021). Atlas (Izacard et al.,
+2022) is a state-of-the-art retrieval-augmented LM,
+which jointly pre-trains the retriever with the LM
+using unsupervised data and fine-tunes the retriever
+via the attention distillation on few-shot data.
+1We use the GPT-3text-davinci-002 December 2022 version.
+242
+Settings
+Methods
+# Parameters
+MMLU
+PopQA
+All
+Hum.
+Soc. Sci.
+STEM
+Other
+All
+Base Setting: T5 Base Size
+Few-shot
+Flan-T5Base (Chung et al., 2022)
+250M
+35.8
+39.6
+39.8
+26.3
+41.2
+8.0
+Zero-shot
+Flan-T5Base
+250M
+36.1
+40.4
+39.8
+27.0
+40.6
+8.8
+Flan-T5Base w/ AR (Mallen et al., 2022)
+250M
+42.8
+43.5
+44.0
+35.8
+50.0
+29.4
+Flan-T5Base w/ AARContriever (Ours)
+250M
+44.4
+44.7
+47.7
+35.8
+52.2
+31.9
+Flan-T5Base w/ AARANCE (Ours)
+250M
+44.8
+42.2
+46.4
+39.0
+53.2
+37.7
+Large Setting: T5 Large Size
+Few-shot
+AtlasLarge FT (Izacard et al., 2022)
+770M
+38.9
+37.3
+41.7
+32.3
+44.9
+n.a.
+Flan-T5Large
+780M
+45.1
+47.7
+53.5
+34.4
+49.2
+9.3
+Zero-shot
+Flan-T5Large
+780M
+44.8
+46.3
+51.4
+34.8
+50.6
+7.2
+Flan-T5Large w/ AR
+780M
+49.8
+50.0
+55.6
+38.4
+59.5
+29.6
+Flan-T5Large w/ AARContriever (Ours)
+780M
+51.8
+50.8
+59.7
+39.4
+61.8
+33.4
+Flan-T5Large w/ AARANCE (Ours)
+780M
+50.4
+48.0
+58.1
+39.3
+60.2
+39.3
+XL Setting: T5 XL Size
+Few-shot
+AtlasXL FT
+3B
+42.3
+40.0
+46.8
+35.0
+48.1
+n.a.
+Flan-T5XL
+3B
+51.6
+55.0
+61.1
+36.8
+59.5
+11.1
+Zero-shot
+Flan-T5XL
+3B
+51.2
+55.5
+57.4
+38.1
+58.7
+11.3
+Flan-T5XL w/ AR
+3B
+55.5
+56.7
+64.5
+43.0
+62.6
+33.7
+Flan-T5XL w/ AARContriever (Ours)
+3B
+56.7
+57.7
+65.4
+43.6
+65.1
+31.5
+Flan-T5XL w/ AARANCE (Ours)
+3B
+56.2
+59.4
+64.8
+41.5
+64.9
+38.0
+Giant Setting: Over 70B Size
+Few-shot
+Chinchilla (Hoffmann et al., 2022)
+70B
+67.5
+63.6
+79.3
+55.0
+73.9
+n.a.
+OPT-IML-Max (Iyer et al., 2022)
+175B
+47.1
+n.a.
+n.a.
+n.a.
+n.a.
+n.a.
+InstructGPT (Ouyang et al., 2022)
+175B
+60.5
+62.0
+71.8
+44.3
+70.1
+35.2
+Zero-shot
+GAL (Taylor et al., 2022)
+120B
+52.6
+n.a.
+n.a.
+n.a.
+n.a.
+n.a.
+OPT-IML-Max
+175B
+49.1
+n.a.
+n.a.
+n.a.
+n.a.
+n.a.
+InstructGPT
+175B
+60.2
+65.7
+68.0
+46.1
+66.5
+34.7
+InstructGPT w/ AR
+175B
+60.5
+62.2
+71.3
+44.7
+69.7
+43.3
+InstructGPT w/ AARContriever (Ours)
+175B
+61.5
+64.5
+73.1
+45.0
+69.9
+43.9
+InstructGPT w/ AARANCE (Ours)
+175B
+62.2
+62.0
+72.0
+49.2
+70.7
+52.0
+Table 1: Main results on MMLU and PopQA. We group the methods by the parameters. Our Ls is Flan-T5Base.
+AARContriever: AAR initialized from Contriever; AARANCE: AAR initialized from ANCE; FT: fine-tuning; AR:
+adaptive retrieval. Unspecified methods represent direct prompting. The score marked in bold represents the highest
+performance achieved among the models in the zero-shot setting.
+2.5
+5.0
+7.5
+Training FLOPs 1e21
+30
+35
+40
+45
+50
+55
+60
+MMLU Accuracy
+AARANCE
+Ls=Flan-T5Base, Lt=Flan-T5Base
+AARANCE
+Ls=Flan-T5Base, Lt=Flan-T5Large
+AARANCE
+Ls=Flan-T5Base, Lt=Flan-T5XL
+AARANCE
+Ls=Lt=Flan-T5Large
+AARANCE
+Ls=Lt=Flan-T5XL
+AtlasLarge
+AtlasXL
+Figure 3: Training FLOPs of AARANCE and Atlas.
+###5 Evaluation Results
+In this section, we discuss our main results on
+MMLU and PopQA datasets (§ 5.1) and conduct
+comprehensive studies about how (§ 5.2, § 5.3,
+§ 5.4) and when (§ 5.5, § 5.6) AAR helps.
+###5.1 Overall Performance
+Table 1 demonstrates that, with the assistance of a
+generic AAR, target LMs of different sizes and
+architectures can significantly outperform their
+standalone baselines in the zero-shot setting. No-
+tably, AAR even improves powerful InstructGPT
+by 2% on MMLU and by nearly 20% on PopQA.
+We hypothesize that the PopQA dataset mainly
+comprises long-tail questions and thus necessitates
+more augmentation information to attain high accu-
+racy. AAR outperforms other augmentation meth-
+ods like few-shot prompting and adaptive retrieval,
+as they may not offer as extensive evidence text as
+AAR does.
+Meanwhile, AAR is a highly efficient augmenta-
+tion approach since it only relies on a small source
+LM Flan-T5Base (250M) to provide training signals
+and can generalize well to target LMs of larger ca-
+pacities. Figure 3 illustrates that solely setting the
+242
+250M 780M
+3B
+175B
+# Parameters
+40
+45
+50
+55
+60
+65
+70
+75
+MMLU Accuracy
+ANCE
+AARANCE
+Contriever
+AARContriever
+(a) Pre-trained retrievers.
+250M 780M
+3B
+175B
+# Parameters
+40
+45
+50
+55
+60
+65
+70
+75
+MMLU Accuracy
+Human
+Ls=Flan-T5Base LM
+Ls=Flan-T5Base
+Ls=Flan-T5Large
+(b) Positive docs selection.
+Figure 4: AAR’s performance when (a) using differ-
+ent pre-trained retrievers and (b) trained with different
+positive documents, using Flan-T5Base (250M), Flan-
+T5Large (780M), Flan-T5XL (3B), InstructGPT (175B)
+as Lt. The retriever in (b) is initialized from ANCE.
+source LM as the target LM (represented by the in-
+verted triangles) does not significantly enhance the
+MMLU accuracy. However, it may triple the train-
+ing budget required. Only using a small source LM
+is able to outperform the powerful Atlas by large
+margins with fewer training FLOPs.
+###5.2 Ablation Study
+In this experiment, we conduct the ablation study of
+augmentation-adapted training and analyze model
+behaviors during the training process.
+Figure 4a illustrates that augmentation-adapted
+training can bring additional improvements com-
+pared to the pre-trained retrievers.
+In general,
+ANCE benefits more from augmentation-adapted
+training than Contriever. This may be due to the
+fact that Contriever has been already intensively
+pre-trained on massive data augmentations as well
+as MS MARCO whereas ANCE is trained only on
+MS MARCO. We provide exact numbers in Table 7
+and PopQA results in Figure 8, which yield similar
+observations as MMLU.
+In Figure 4b, we compare retrievers trained with
+different positive documents, including human-
+preferred documents annotated by search users (the
+blue bar), LM-preferred documents obtained by
+the source LM (the orange bar), and their combi-
+nations (the green bar and the red bar). Since the
+retriever has been pre-trained on user-annotated
+MS MARCO, simply using human-preferred docu-
+ments to train it may be meaningless and therefore
+performs the worst among all approaches. Only
+using LM-preferred documents demonstrates no-
+table gains over only using human-preferred doc-
+uments, and merging both human-preferred and
+LM-preferred documents (our main setup) further
+enhances the retriever’s performance. Finally, us-
+0 10K
+30K
+50K
+70K
+Training step
+1.0
+1.1
+1.2
+1.3
+1.4
+MS MARCO Loss
+28
+30
+32
+34
+36
+MS MARCO MRR@10
+Train Loss
+Eval Loss
+MRR@10
+(a) Retriever’s performance.
+0 10K
+30K
+50K
+70K
+Training step
+42
+43
+44
+45
+46
+47
+MMLU Accuracy
+MMLU
+28.0
+28.4
+28.8
+29.2
+29.6
+30.0
+MSMARCO QA Rouge-L
+MSMARCO QA
+(b) Lt’s performance.
+Figure 5: AAR’s training process. (a) exhibits the re-
+triever’s (ANCE) performance on MS MARCO. (b)
+presents the Lt’s (Flan-T5Base) performance on MS-
+MARCO QA and MMLU.
+Base Large XL Human
+Base
+Large
+XL
+Human
+100.0%
+60.6%
+55.2%
+13.2%
+60.6%
+100.0%
+69.2%
+13.3%
+55.2%
+69.2%
+100.0%
+13.1%
+13.2%
+13.3%
+13.1%
+100.0%
 0.2
 0.4
 0.6
 0.8
-Timestep
-Dice Score
-(d) Dice score
-Figure 7: Information contained in xt. Cross entropy and dice score between xt and
-ground truth x0 are used to empirically measure the amount of information of ground truth
-x0 contained in xt. The dashed line represents the information contained in the sampled
-noise (between noise and ground truth x0), which is considered to be the limit. The values
-are calculated using the sample “005095” in prostate MR data set.
-Table 7: Network Size
-
-Fu et al.
-Appendix F. Results
-F.1 Diffusion Training Strategy Comparison
-Table 8: Per class Dice score comparison
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-Table 9: Per class Hausdorff distance comparison “No diff
-
-Fu et al.
-−0.05
+1.0
+Set Overlap
+(a) Positive docs overlap.
 0
-0.05
-DS Difference
-(a) DS difference for muscle ultrasound
-−20
-0
+10
 20
-HD Difference
-(b) HD difference for muscle ultrasound
-−0.02
-0
-0.02
-DS Difference
-(c) DS difference for abdominal CT
-−1
-−0.5
-0
-0.5
-1
-HD Difference
-(d) HD difference for abdominal CT
-−0.04
-−0.02
-0
-0.02
-0.04
-DS Difference
-(e) DS difference for prostate MR
-−2
-−1
-0
-1
-2
-HD Difference
-(f) HD difference for prostate MR
-−0.05
-0
-0.05
-DS Difference
-(g) DS difference for brain MR
-−4
-−2
-0
-2
-4
-HD Difference
-(h) HD difference for brain MR
-Figure 8: Segmentation performance difference between the last step and first
-step using DDPM. “Diff.” represents standard diffusion. “Diff. sc. xt” and “Diff. sc. xt+1”
-represents self-conditioning from Chen et al. (2022b) and Watson et al. (2023), respectively.
-“Diff. rec. xt+1” and “Diff. rec. xT ” represents recycling from Fu et al. (2023) and the
-proposed recycling in this work, respectively. The sampler is DDPM. DS and HD represents
-Dice score and Hausdorff distance, respectively. The difference is the value at the last step
-subtracted by the one at the first step. A positive value for Dice score difference or a negative
-value for Hausdorff distance means improvement.
-542
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-−0.05
-0
-0.05
-DS Difference
-(a) DS difference for muscle ultrasound
-−20
-0
-20
-HD Difference
-(b) HD difference for muscle ultrasound
-−0.02
-0
-0.02
-DS Difference
-(c) DS difference for abdominal CT
-−1
-−0.5
-0
-0.5
-1
-HD Difference
-(d) HD difference for abdominal CT
-−0.04
-−0.02
-0
-0.02
-0.04
-DS Difference
-(e) DS difference for prostate MR
-−2
-−1
-0
-1
-2
-HD Difference
-(f) HD difference for prostate MR
-−0.05
-0
-0.05
-DS Difference
-(g) DS difference for brain MR
-−4
-−2
-0
-2
-4
-HD Difference
-(h) HD difference for brain MR
-Figure 9: Segmentation performance difference between the last step and first
-step using DDIM. “Diff.” represents standard diffusion. “Diff. sc. xt” and “Diff. sc. xt+1”
-represents self-conditioning from Chen et al. (2022b) and Watson et al. (2023), respectively.
-“Diff. rec. xt+1” and “Diff. rec. xT ” represents recycling from Fu et al. (2023) and the
-proposed recycling in this work, respectively. The sampler is DDIM. DS and HD represents
-Dice score and Hausdorff distance, respectively. The difference is the value at the last step
-subtracted by the one at the first step. A positive value for Dice score difference or a negative
-value for Hausdorff distance means improvement.
-543
-
-Fu et al.
-1
-2
-3
-4
-5
-86
-87
-88
-Step
-DS
-(a) Dice Score for muscle ultrasound
-1
-2
-3
-4
-5
+30
+40
+50
+60
+MSMARCO QA Rouge-L
+Standalone LM
+Human
+Human (Ans-Deletion)
+LM
+LM (Ans-Deletion)
+(b) Answer-deletion test.
+Figure 6: Analysis of LM-preferred documents. (a)
+shows the overlaps of positive document sets, where
+used LMs are Flan-T5 series. (b) presents the answer-
+deletion experiments on the MSMARCO QA dataset.
+The retriever is initialized from ANCE.
+ing Flan-T5Base as source LM yields better results
+compared to using Flan-T5Large when the target
+LMs are relatively small. However, as the target
+LM’s size increases, both approaches achieve com-
+parable performance. Hence, our choice to utilize
+a small source LM in the augmentation-adapted
+training is reasonable and effective.
+Figure 5a and Figure 5b plot the retriever’s and
+LM’s performance during augmentation-adapted
+training, respectively. At the beginning of the train-
+ing, the retriever’s MRR@10 on the MS MARCO
+drops dramatically, indicating a large distribution
+gap between human-preferred and LM-preferred
+documents. As the retriever’s train and dev loss
+continually decline, the retrieval-augmented LM
+gradually performs better on MSMARCO QA and
+eventually, on MMLU. This result implies that LMs
+on different task may share common preferences,
+making AAR generalize well from single source
+task to heterogeneous target tasks.
+###5.3 Analysis of LM-preferred Documents
+We highlight the necessity of adapting existing re-
+trievers to LMs by comparing the preferred docu-
+242
+Question
+Human-preferred Document
+LM-preferred Document
+what happens if you miss
+your cruise ship
+If you do miss the ship, go into the
+cruise terminal and talk with the port
+agents, who are in contact with both
+shipboard and shoreside personnel.
+They can help you decide the best way
+to meet your ...
+The cruise line is not financially respon-
+sible for getting passengers to the next
+port if they miss the ship. Your travel to
+the subsequent port, or home, is on your
+dime, as are any necessary hotel stays
+and meals...
+what is annexation?
+Annexation is an activity in which two
+things are joined together, usually with
+a subordinate or lesser thing being at-
+tached to a larger thing. In strict legal
+terms, annexation simply involves...
+Annexation (Latin ad, to, and nexus,
+joining) is the administrative action and
+concept in international law relating to
+the forcible transition of one state’s ter-
+ritory by another state. It is generally
+held to be an illegal act...
+Table 2: Case study on MSMARCO QA. We show the human-preferred documents and the Top-1 LM-preferred
+documents. Red texts are gold answer spans. Green texts are related spans covering other aspects of the question.
+ments between search users and LMs. In general,
+we discover that LM-preferred documents can as-
+sist LM from alternative perspectives rather than
+the full information favored by search users.
+First, we define the set overlap O between two
+positive documents set D+
+1 and D+
+2 as:
+O = (D+
+1 ∩ D+
+2 )/(D+
+1 ∪ D+
+2 ).
+(8)
+As illustrated in Figure 6a, the set overlaps of the
+positive document sets annotated by human users
+(Dh+) and LMs (Top-KSa
+i ,Da) are quite low (near
+13%), demonstrating their distinct tendencies in
+selecting valuable documents. On the contrary, the
+overlaps between different LMs are relatively high
+(over 55%). This evidence provides a strong ratio-
+nale for the generalization ability of AAR since
+LMs with different sizes tend to annotate simi-
+lar positive documents. Furthermore, LMs whose
+sizes are closer generally possess higher overlaps.
+This implies a better generalization ability of the
+AAR to the LMs whose capacity is near the source
+LM. The findings further validate the results illus-
+trated in Figure 4b.
+To give an in-depth analysis of how human-
+preferred and LM-preferred documents differ, we
+show two representative cases sampled from the
+MSMARCO QA in Table 2. We observe that the
+human-preferred document can always present the
+gold answer at the beginning of the text, while the
+LM-preferred document may not contain the exact
+answer. However, an LM-preferred document may
+(1) deliver a new perspective to answer the given
+question, e.g., the cruise line’s responsibility if you
+miss your cruise ship, or (2) give a specific explana-
+tion instead of an abstract definition, e.g., “forcible
+transition of one state’s territory by another state”,
+250M
+780M
+3B
+175B
+# Parameters
+40
+45
+50
+55
+60
+65
+70
+75
+MMLU Accuracy
+TART
+AARContriever (MSMARCO QA)
+AARContriever (KILT)
+AARANCE (MSMARCO QA)
+AARANCE (KILT)
+Figure 7:
+Comparison between single-task (MS-
+MARCO QA) and multi-task (KILT) trained AAR.
+TART (Asai et al., 2022) is a multi-task instruction-
+finetuned retriever that has not been finetuned with LM-
+preferred signals.
+These characteristics differ from search users who
+want the full information and can further assist
+LMs in knowledge-based reasoning.
+We further examine the unique characteristics
+of LM-preferred documents through the answer-
+deletion test (i.e., deleting the exact answer span
+from the retrieved documents).
+As shown in
+Figure 6b, the retriever trained by either human-
+preferred (i.e., human-preferred retriever) or LM-
+preferred documents (i.e., LM-preferred retriever)
+can help LM answer the given question. Never-
+theless, after the answer-deletion, the performance
+of LM with the human-preferred retriever declines
+more significantly than with the LM-preferred re-
+triever. Despite having fewer exact match answers
+(0.6% for LM-preferred documents vs. 13.0% for
+human-preferred documents), LM-preferred docu-
+ments provide helpful information from alternative
+perspectives. Therefore, adapting retrievers with
+LM-preferred documents can in turn make retrieval-
+augmented LM perform better.
+242
+Corpora
+MMLU
+PopQA
+All
+Hum.
+Soc. Sci.
+STEM
+Other
+All
+MS MARCO
+44.8
+42.2
+46.4
+39.0
+53.2
+13.6
+KILT-Wikipedia
+42.6
+42.5
+45.9
+34.3
+50.5
+37.7
+Standalone LM
+36.1
+40.4
+39.8
+27.0
+40.6
+8.8
+Table 3: Performance with different retrieval corpora,
+using Flan-T5Base as Lt and AARANCE as retriever.
+###5.4 Multi-task Training of AAR
+In this section, we explore if the multi-task training
+of AAR can endow the retriever with better gener-
+alization to the target task. Specifically, we choose
+KILT (Petroni et al.) as our multi-task data source,
+which consists of 5 categories (Fact Checking, En-
+tity Linking, Slot Filling, Open Domain QA, and
+Dialogue). We take one representative subtask per
+category to form a mixture of multiple source tasks.
+Figure 7 illustrates that ANCE trained with
+multi-task KILT can consistently outperform the
+single-task MSMARCO QA, proving the bet-
+ter generalization ability brought by multi-task
+augmentation-adapted training. It is possible that
+LMs may vary slightly in preferred documents for
+different tasks and AAR can switch more smoothly
+to the target task with the help of multi-task train-
+ing. Contriever does not benefit greatly from multi-
+task training. We conjecture that this is because
+Contriever has been pre-trained with multiple for-
+mats of data augmentations and thus generalizes
+better to new data distribution than ANCE. Inter-
+estingly, multi-task instruction-finetuned retriever
+TART (Asai et al., 2022) has an overall worse per-
+formance compared to AAR, highlighting the ben-
+efits of having LM-preferred documents during the
+multi-task training. A more detailed analysis about
+the selection of source tasks is in Appendix B.
+###5.5 Effect of Retrieval Corpus
+Table 3 demonstrates that regardless of the retrieval
+corpus, AAR results in consistent and substantial
+performance gains over the standalone LM.
+On MMLU, using MS MARCO as the retrieval
+corpus improves the LM more compared to KILT-
+Wikipedia. We hypothesize that the retriever has
+been trained with MS MARCO corpus and thus
+holds better retrieval performance on it.
+On PopQA, model performance will drop by
+large margins if we use MS MARCO as the re-
+trieval corpus instead of KILT-Wikipedia. The pri-
+mary reason is that the PopQA dataset is sampled
+from Wikidata and designed for long-tail questions.
+Partial long-tail knowledge can be only found in
+Settings
+Methods
+MMLU
+PopQA
+All
+All
+Few-shot
+OPT (Zhang et al., 2022)
+26.0
+12.3
+GPT-neo (Black et al., 2021)
+28.7
+11.3
+Zero-shot
+OPT
+22.7
+12.0
+GPT-neo
+25.3
+9.9
+OPT GenRead
+22.3
+12.2
+GPT-neo GenRead
+24.4
+11.9
+OPT w/ AARContriever (Ours)
+23.2
+29.1
+GPT-neo w/ AARContriever (Ours)
+25.2
+27.8
+OPT w/ AARANCE (Ours)
+23.7
+32.9
+GPT-neo w/ AARANCE (Ours)
+26.6
+30.1
+Table 4: Results of using models that have not been
+multi-task instruction-finetuned as Lt. We experiment
+with the 1.3B version of OPT and GPT-neo.
+KILT-Wikipedia (Mallen et al., 2022) while MS
+MARCO lacks the indispensable evidence that
+should be utilized for answer prediction. For in-
+stance, given the question “Who is the mother
+of Melissa Benn?”, there is no document in MS
+MARCO containing the answer “Caroline Benn”.
+Under such circumstances, aligning the retrieval
+corpus with the data source can be necessary to
+leverage AAR’s ability.
+###5.6 Application Scenarios of AAR
+To examine if AAR works for unseen LMs that may
+lack zero-shot generalization ability, we report the
+results of using OPT (Zhang et al., 2022) and GPT-
+neo (Black et al., 2021) as Lt, which have not been
+multi-task instruction-finetuned.
+From Table 4, we observe that AAR improves
+both LMs marginally on MMLU while achieving
+significant gains on PopQA. We conjecture that
+LMs can benefit more easily from retrieval augmen-
+tation on the knowledge-probing task like PopQA,
+where the answer span can be directly acquired
+from the retrieved documents. MMLU requires the
+LM to not only comprehend the retrieved pieces of
+evidence but also perform knowledge-based reason-
+ing over them. OPT and GPT-neo may not possess
+such abilities in zero-shot scenarios.
+In summary, although AAR perfectly fits the
+multi-task instruction-finetuned LMs such as the
+Flan-T5 series and InstructGPT, it may not bring
+significant gains for LMs whose zero-shot perfor-
+mance is sometimes poor, especially on knowledge-
+based reasoning. However, we believe that multi-
+task instruction-finetuned models will be the foun-
+dation of future work due to their outstanding zero-
+shot generalization capabilities, ensuring the wide-
+ranging application scenarios of AAR.
+242
+###6 Discussions
+LM-preferred Documents. Acquiring discrete
+feedback signals from LMs is challenging as it re-
+quires superior labeling ability, which is not the de-
+signed purpose of LMs. Inspired by ADist (Izacard
+and Grave, 2021a) and Atlas (Izacard et al., 2022),
+we utilize the FiDAtt scores to select LM-preferred
+documents for the augmentation-adapted training.
+However, FiDAtt scores may not reflect the actual
+contribution of each document faithfully since LM
+may prefer attending to readable rather than in-
+formative documents. Furthermore, the quality of
+LM-preferred documents depends heavily on the
+initial performance of the retrieval-augmented LM.
+Parallel work (Shi et al., 2023) computes the KL
+divergence between retrieval likelihood and LM
+likelihood to train the retriever. Nevertheless, they
+require a larger source LM, Curie (6.7B), to pro-
+vide accurate LM likelihood signals. In the future,
+reinforcement learning could serve as an alterna-
+tive method to train the retriever, as it optimizes
+the retriever by directly leveraging LM’s signals
+without relying on the devised rule.
+Generic Retrieval Plug-in.
+Chatgpt-retrieval-
+plugin2 has recently gained attention in the NLP
+community as a generic retrieval plug-in. It re-
+trieves the most relevant document from users’ data
+sources and tailor ChatGPT’s response to meet their
+specific needs. We believe that techniques such as
+AAR will enhance the ability of black-box Chat-
+GPT to generate more reasonable responses based
+on the retrieved information, thereby promoting the
+development of human-centered LM design.
+###7 Conclusion and Future Work
+This paper introduces generic retrieval plug-in that
+utilizes a generic retriever to enhance target LMs
+that may be unknown in advance or are unable
+to be fine-tuned jointly. Our proposed retriever,
+AAR, can directly support black-box LMs without
+requiring any fine-tuning of the LMs. This is ac-
+complished by building the AAR’s training data
+with preferred documents from a small source LM
+together with the ground truth.
+Empirical results on MMLU and PopQA demon-
+strate that AAR-assisted LMs greatly outperform
+the standalone ones in zero-shot scenarios, and
+AAR generalizes well to LMs of different sizes
+2https://github.com/openai/chatgpt-retrieval-plugin
+and structures. Analytical results reveal that LM-
+preferred and human-preferred documents comple-
+ment each other; LM-preferred documents from
+different LMs overlap significantly, and LMs with
+similar sizes tend to yield closer document sets.
+We leave a more detailed explanation of how dif-
+ferent LMs interact with augmentation documents
+and a more reasonable selection of LM-preferred
+documents for future work. We hope our work
+shed light on a path to a generic way of treating
+large LMs as black boxes and adapting retrievers
+to augment them.
+Limitations
+Due to the limitation of computational resources,
+we have not evaluated the Flan-T5XXL whose num-
+ber of parameters is 11B, and the OPT whose num-
+ber of parameters is greater than 1.3B.
+Since OPT and GPT-neo perform poorly in the
+zero-shot setting and separating attention scores of
+each document in the input is tedious for decoder-
+only models, we choose not to use them as source
+LMs. However, we prove that taking the encoder-
+decoder model Flan-T5Base as our source LM is
+also robust to augment decoder-only models. We
+will explore new methods to annotate LM-preferred
+documents of decoder-only models based on their
+inherent signals.
+Acknowledgement
+Zichun Yu, Shi Yu, and Zhiyuan Liu are supported
+by Institute Guo Qiang at Tsinghua University, Bei-
+jing Academy of Artificial Intelligence (BAAI).
+All authors proposed the original idea together.
+Zichun Yu conducted the experiments. Zichun Yu,
+Chenyan Xiong, Shi Yu, and Zhiyuan Liu wrote
+the paper. Chenyan Xiong and Zhiyuan Liu pro-
+vided valuable suggestions for the research. We
+thank Suyu Ge for sharing the ANCE checkpoint
+initialized from T5Base.
+References
+Fabien André, Anne-Marie Kermarrec, and Nicolas
+Le Scouarnec. 2016. Cache locality is not enough:
+High-performance nearest neighbor search with prod-
+uct quantization fast scan. In VLDB, page 12.
+Akari Asai, Timo Schick, Patrick Lewis, Xilun Chen,
+Gautier Izacard, Sebastian Riedel, Hannaneh Ha-
+jishirzi, and Wen-tau Yih. 2022. Task-aware retrieval
+with instructions. arXiv preprint arXiv:2211.09260.
+242
+Payal Bajaj, Daniel Campos, Nick Craswell, Li Deng,
+Jianfeng Gao, Xiaodong Liu, Rangan Majumder, An-
+drew McNamara, Bhaskar Mitra, Tri Nguyen, et al.
+2016. Ms marco: A human generated machine read-
+ing comprehension dataset. In CoCo@NeurIPS.
+Emily M. Bender, Timnit Gebru, Angelina McMillan-
+Major, and Shmargaret Shmitchell. 2021. On the
+dangers of stochastic parrots: Can language models
+be too big? In Proceedings of ACM FAccT, pages
+610–623.
+Sid Black, Gao Leo, Phil Wang, Connor Leahy, and
+Stella Biderman. 2021. Gpt-neo: Large scale autore-
+gressive language modeling with mesh-tensorflow.
+Sebastian Borgeaud, Arthur Mensch, Jordan Hoff-
+mann, Trevor Cai, Eliza Rutherford, Katie Milli-
+can, George Bm Van Den Driessche, Jean-Baptiste
+Lespiau, Bogdan Damoc, Aidan Clark, Diego
+De Las Casas, Aurelia Guy, Jacob Menick, Roman
+Ring, Tom Hennigan, Saffron Huang, Loren Mag-
+giore, Chris Jones, Albin Cassirer, Andy Brock,
+Michela Paganini, Geoffrey Irving, Oriol Vinyals,
+Simon Osindero, Karen Simonyan, Jack Rae, Erich
+Elsen, and Laurent Sifre. 2022. Improving language
+models by retrieving from trillions of tokens. In
+ICML, pages 2206–2240.
+Tom Brown, Benjamin Mann, Nick Ryder, Melanie
+Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind
+Neelakantan, Pranav Shyam, Girish Sastry, Amanda
+Askell, et al. 2020. Language models are few-shot
+learners. In NeurIPS, pages 1877–1901.
+Aakanksha Chowdhery, Sharan Narang, Jacob Devlin,
+Maarten Bosma, Gaurav Mishra, Adam Roberts, Paul
+Barham, Hyung Won Chung, Charles Sutton, Sebas-
+tian Gehrmann, Parker Schuh, and et al. 2022. Palm:
+Scaling language modeling with pathways. arXiv
+preprint arXiv:2204.02311.
+Hyung Won Chung, Le Hou, Shayne Longpre, Barret
+Zoph, Yi Tay, William Fedus, Eric Li, Xuezhi Wang,
+Mostafa Dehghani, Siddhartha Brahma, Albert Web-
+son, Shixiang Shane Gu, Zhuyun Dai, Mirac Suz-
+gun, Xinyun Chen, Aakanksha Chowdhery, Sharan
+Narang, Gaurav Mishra, Adams Yu, Vincent Zhao,
+Yanping Huang, Andrew Dai, Hongkun Yu, Slav
+Petrov, Ed H. Chi, Jeff Dean, Jacob Devlin, Adam
+Roberts, Denny Zhou, Quoc V. Le, and Jason Wei.
+2022. Scaling instruction-finetuned language models.
+arXiv preprint arXiv:2210.11416.
+Jacob Devlin, Ming-Wei Chang, Kenton Lee, and
+Kristina Toutanova. 2019. BERT: Pre-training of
+deep bidirectional transformers for language under-
+standing. In Proceedings of NAACL, pages 4171–
+4186.
+Tianyu Gao, Adam Fisch, and Danqi Chen. 2021.
+Making pre-trained language models better few-shot
+learners. In Proceedings of ACL, pages 3816–3830.
+Suyu Ge, Chenyan Xiong, Corby Rosset, Arnold Over-
+wijk, Jiawei Han, and Paul Bennett. 2023. Augment-
+ing zero-shot dense retrievers with plug-in mixture-
+of-memories. arXiv preprint arXiv:2302.03754.
+Kelvin Guu, Kenton Lee, Zora Tung, Panupong Pasu-
+pat, and Ming-Wei Chang. 2020. Realm: Retrieval-
+augmented language model pre-training. In ICML,
+pages 3929–3938.
+Hangfeng He, Hongming Zhang, and Dan Roth. 2022.
+Rethinking with retrieval: Faithful large language
+model inference. arXiv preprint arXiv:2301.00303.
+Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou,
+Mantas Mazeika, Dawn Song, and Jacob Steinhardt.
+2021. Measuring massive multitask language under-
+standing. In ICLR.
+Jordan Hoffmann, Sebastian Borgeaud, Arthur Men-
+sch, Elena Buchatskaya, Trevor Cai, Eliza Ruther-
+ford, Diego de Las Casas, Lisa Anne Hendricks, Jo-
+hannes Welbl, Aidan Clark, Thomas Hennigan, Eric
+Noland, Katherine Millican, George van den Driess-
+che, Bogdan Damoc, Aurelia Guy, Simon Osindero,
+Karén Simonyan, Erich Elsen, Oriol Vinyals, Jack
+Rae, and Laurent Sifre. 2022. An empirical analysis
+of compute-optimal large language model training.
+In NeurIPS, pages 30016–30030.
+Srinivasan Iyer, Xi Victoria Lin, Ramakanth Pasunuru,
+Todor Mihaylov, Daniel Simig, Ping Yu, Kurt Shuster,
+Tianlu Wang, Qing Liu, Punit Singh Koura, Xian Li,
+Brian O’Horo, Gabriel Pereyra, Jeff Wang, Christo-
+pher Dewan, Asli Celikyilmaz, Luke Zettlemoyer,
+and Ves Stoyanov. 2022. Opt-iml: Scaling language
+model instruction meta learning through the lens of
+generalization. arXiv preprint arXiv:2212.12017.
+Gautier Izacard, Mathilde Caron, Lucas Hosseini, Se-
+bastian Riedel, Piotr Bojanowski, Armand Joulin,
+and Edouard Grave. 2021. Unsupervised dense infor-
+mation retrieval with contrastive learning. TMLR.
+Gautier Izacard and Edouard Grave. 2021a. Distilling
+knowledge from reader to retriever for question an-
+swering. In ICLR.
+Gautier Izacard and Edouard Grave. 2021b. Leveraging
+passage retrieval with generative models for open
+domain question answering. In Proceedings of EACL,
+pages 874–880.
+Gautier Izacard, Patrick Lewis, Maria Lomeli, Lu-
+cas Hosseini, Fabio Petroni, Timo Schick, Jane
+Dwivedi-Yu, Armand Joulin, Sebastian Riedel, and
+Edouard Grave. 2022. Few-shot Learning with Re-
+trieval Augmented Language Models. arXiv preprint
+arXiv:2208.03299.
+Jeff Johnson, Matthijs Douze, and Herve Jegou. 2021.
+Billion-scale similarity search with gpus. IEEE TBD,
+7(3):535–547.
+243
+Mingxuan Ju, Wenhao Yu, Tong Zhao, Chuxu Zhang,
+and Yanfang Ye. 2022. Grape: Knowledge graph
+enhanced passage reader for open-domain question
+answering. In Findings of EMNLP.
+Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B
+Brown, Benjamin Chess, Rewon Child, Scott Gray,
+Alec Radford, Jeffrey Wu, and Dario Amodei. 2020.
+Scaling laws for neural language models.
+arXiv
+preprint arXiv:2001.08361.
+Vladimir Karpukhin, Barlas Oguz, Sewon Min, Patrick
+Lewis, Ledell Wu, Sergey Edunov, Danqi Chen, and
+Wen-tau Yih. 2020.
+Dense passage retrieval for
+open-domain question answering. In Proceedings
+of EMNLP, pages 6769–6781.
+Omar Khattab,
+Keshav Santhanam,
+Xiang Lisa
+Li, David Hall, Percy Liang, Christopher Potts,
+and Matei Zaharia. 2022.
+Demonstrate-search-
+predict: Composing retrieval and language mod-
+els for knowledge-intensive nlp.
+arXiv preprint
+arXiv:2212.14024.
+Patrick Lewis, Ethan Perez, Aleksandara Piktus, Fabio
+Petroni, Vladimir Karpukhin, Naman Goyal, Hein-
+rich Küttler, Mike Lewis, Wen-tau Yih, Tim Rock-
+täschel, Sebastian Riedel, and Douwe Kiela. 2020.
+Retrieval-augmented generation for knowledge-
+intensive NLP tasks. In NeurIPS, pages 9459–9474.
+Bill Yuchen Lin, Kangmin Tan, Chris Miller, Beiwen
+Tian, and Xiang Ren. 2022. Unsupervised cross-
+task generalization via retrieval augmentation. In
+NeurIPS, pages 22003–22017.
+Alex Mallen, Akari Asai, Victor Zhong, Rajarshi
+Das, Hannaneh Hajishirzi, and Daniel Khashabi.
+2022. When not to trust language models: Inves-
+tigating effectiveness and limitations of paramet-
+ric and non-parametric memories. arXiv preprint
+arXiv:2212.10511.
+Antonis Maronikolakis and Hinrich Schütze. 2021. Mul-
+tidomain pretrained language models for green NLP.
+In Proceedings of AdaptNLP, pages 1–8.
+OpenAI. 2023. Gpt-4 technical report. arXiv preprint
+arXiv:2303.08774.
+Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida,
+Carroll Wainwright, Pamela Mishkin, Chong Zhang,
+Sandhini Agarwal, Katarina Slama, Alex Gray, John
+Schulman, Jacob Hilton, Fraser Kelton, Luke Miller,
+Maddie Simens, Amanda Askell, Peter Welinder,
+Paul Christiano, Jan Leike, and Ryan Lowe. 2022.
+Training language models to follow instructions with
+human feedback. In NeurIPS, pages 27730–27744.
+Fabio Petroni, Aleksandra Piktus, Angela Fan, Patrick
+Lewis, Majid Yazdani, Nicola De Cao, James Thorne,
+Yacine Jernite, Vladimir Karpukhin, Jean Maillard,
+Vassilis Plachouras, Tim Rocktäschel, and Sebastian
+Riedel. KILT: a benchmark for knowledge intensive
+language tasks. In Proceedings of NAACL, pages
+2523–2544.
+Colin Raffel, Noam Shazeer, Adam Roberts, Katherine
+Lee, Sharan Narang, Michael Matena, Yanqi Zhou,
+Wei Li, and Peter J. Liu. 2020. Exploring the limits
+of transfer learning with a unified text-to-text trans-
+former. JMLR, 21:140:1–140:67.
+Adam Roberts, Colin Raffel, and Noam Shazeer. 2020.
+How much knowledge can you pack into the parame-
+ters of a language model? In Proceedings of EMNLP,
+pages 5418–5426.
+Ohad Rubin, Jonathan Herzig, and Jonathan Berant.
+2022. Learning to retrieve prompts for in-context
+learning. In Proceedings of NAACL, pages 2655–
+2671.
+Victor Sanh, Albert Webson, Colin Raffel, Stephen
+Bach, Lintang Sutawika, Zaid Alyafeai, Antoine
+Chaffin, Arnaud Stiegler, Arun Raja, and et al. 2022.
+Multitask prompted training enables zero-shot task
+generalization. In ICLR.
+Weijia Shi, Sewon Min, Michihiro Yasunaga, Min-
+joon Seo, Rich James, Mike Lewis, Luke Zettle-
+moyer, and Wen tau Yih. 2023. Replug: Retrieval-
+augmented black-box language models.
+arXiv
+preprint arXiv:2301.12652.
+Emma Strubell, Ananya Ganesh, and Andrew McCal-
+lum. 2019. Energy and policy considerations for
+deep learning in NLP. In Proceedings of ACL, pages
+3645–3650.
+Ross Taylor, Marcin Kardas, Guillem Cucurull, Thomas
+Scialom, Anthony Hartshorn, Elvis Saravia, Andrew
+Poulton, Viktor Kerkez, and Robert Stojnic. 2022.
+Galactica: A large language model for science. arXiv
+preprint arXiv:2211.09085.
+Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten
+Bosma, brian ichter, Fei Xia, Ed Chi, Quoc V Le,
+and Denny Zhou. 2022. Chain-of-thought prompt-
+ing elicits reasoning in large language models. In
+NeurIPS, pages 24824–24837.
+Chaojun Xiao, Zhengyan Zhang, Xu Han, Chi-Min
+Chan, Yankai Lin, Zhiyuan Liu, Xiangyang Li,
+Zhonghua Li, Zhao Cao, and Maosong Sun. 2023.
+Plug-and-play document modules for pre-trained
+models. In Proceedings of ACL.
+Ji Xin, Chenyan Xiong, Ashwin Srinivasan, Ankita
+Sharma, Damien Jose, and Paul Bennett. 2022. Zero-
+shot dense retrieval with momentum adversarial do-
+main invariant representations. In Findings of ACL,
+pages 4008–4020.
+Lee Xiong, Chenyan Xiong, Ye Li, Kwok-Fung Tang,
+Jialin Liu, Paul N. Bennett, Junaid Ahmed, and
+Arnold Overwijk. 2021. Approximate nearest neigh-
+bor negative contrastive learning for dense text re-
+trieval. In ICLR.
+Wenhao Yu, Dan Iter, Shuohang Wang, Yichong Xu,
+Mingxuan Ju, Soumya Sanyal, Chenguang Zhu,
+Michael Zeng, and Meng Jiang. 2023.
+Generate
+243
+rather than retrieve: Large language models are
+strong context generators. In ICLR.
+Susan Zhang, Stephen Roller, Naman Goyal, Mikel
+Artetxe, Moya Chen, Shuohui Chen, Christopher De-
+wan, Mona Diab, Xian Li, Xi Victoria Lin, Todor Mi-
+haylov, Myle Ott, Sam Shleifer, Kurt Shuster, Daniel
+Simig, Punit Singh Koura, Anjali Sridhar, Tianlu
+Wang, and Luke Zettlemoyer. 2022. Opt: Open pre-
+trained transformer language models. arXiv preprint
+arXiv:2205.01068.
+Zhengyan Zhang, Zhiyuan Zeng, Yankai Lin, Huadong
+Wang, Deming Ye, Chaojun Xiao, Xu Han, Zhiyuan
+Liu, Peng Li, Maosong Sun, and Jie Zhou. 2023.
+Plug-and-play knowledge injection for pre-trained
+language models. In Proceedings of ACL.
+Ce Zhou, Qian Li, Chen Li, Jun Yu, Yixin Liu,
+Guangjing Wang, Kai Zhang, Cheng Ji, Qiben Yan,
+Lifang He, Hao Peng, Jianxin Li, Jia Wu, Ziwei Liu,
+Pengtao Xie, Caiming Xiong, Jian Pei, Philip S. Yu,
+and Lichao Sun. 2023. A comprehensive survey on
+pretrained foundation models: A history from bert to
+chatgpt. arXiv preprint arXiv:2302.09419.
+243
+A
+Experimental Settings
+In this section, we discuss additional experimental
+setup, as a supplement of Section 4.
+A.1
+Training Hyperparameters
+We take the ANCE initialized from T5Base3 (Xiong
+et al., 2021; Ge et al., 2023) and Contriever4 (Izac-
+ard et al., 2021)’s hyperparameters in the
+augmentation-adapted training. Specifically, we fix
+batch size as 8, learning rate as 5e-6, and epochs as
+6 for ANCE while taking batch size as 8, learning
+rate as 1e-5, and epochs as 3 for Contriever. We
+choose their best checkpoints based on the perfor-
+mance of the development set. The statistics about
+our source and target tasks are in Table 6.
+A.2
+Number of Augmentation Documents
+For MMLU, we analyze how the number of aug-
+mentation documents affects LMs’ performance.
+As illustrated in Figure 9, we discover that LMs of
+larger capacity generally benefit more from more
+augmentation documents. A possible explanation
+is that larger LMs are more capable of integrating
+information from multiple documents and perform-
+ing complicated reasoning based on them.
+For PopQA, using 3 augmentation documents
+achieves the best performance across all LMs.
+A.3
+Prompt Templates
+The prompt template for MMLU is:
+Here’s a problem to solve: {question}
+Among the 4 following options, which is
+the correct answer?
+- A: {choice_A}
+- B: {choice_B}
+- C: {choice_C}
+- D: {choice_D}
+The prompt template for PopQA is:
+Q: {question} A:
+B
+Selection of Source Task
+We provide a detailed selection of the source tasks
+here, using a variety of source and target tasks to an-
+alyze. MSMARCO QA, KILT-TriviaQA, and NQ
+belong to Open Domain QA, while KILT-T-REx
+and zsRE belong to Slot Filling. MMLU belongs
+to Multi-task Language Understanding, which is
+closer to the Open Domain QA in terms of the task
+objective. As shown in Table 5, when we align the
+3https://huggingface.co/OpenMatch/t5-ance
+4https://huggingface.co/facebook/contriever-msmarco
+Ts
+Tt
+MMLU
+NQ
+zsRE
+MSMARCO QA
+44.8
+46.7
+75.1
+KILT-TriviaQA
+43.6
+46.4
+74.9
+KILT-T-REx
+44.1
+45.9
+77.2
+Table 5: Relationship between the selection of source
+task Ts and the performance of target task Tt. The
+model is Flan-T5Base w/ AARANCE. As NQ and zsRE
+are included in the Flan-T5 training data, we only report
+their F1 results here for reference.
+250M
+780M
+3B
+175B
+# Parameters
+25
+30
+35
+40
+45
+50
+55
+PopQA Accuracy
+ANCE
+AARANCE
+Contriever
+AARContriever
+Figure 8: AAR’s improvements on PopQA, using Flan-
+T5Base (250M), Flan-T5Large (780M), Flan-T5XL (3B),
+InstructGPT (175B) as target LMs.
+category of the source task with the target task, the
+LM w/ AAR can generally achieve the best results.
+We suppose that this is because LM may share sim-
+ilar document preferences on the tasks from the
+same dataset category, making AAR easier to gen-
+eralize. Furthermore, taking MSMARCO QA as
+the source task performs the best on MMLU. This
+validates the rationality to set Ts as MSMARCO
+QA in our main experimental settings.
+C
+AAR’s Improvements on PopQA
+We show AAR’s improvements on PopQA in Fig-
+ure 8. The observations are similar to Figure 4a.
+D
+Fine-tuning Results
+We also report the fine-tuning results of Flan-
+T5Base and Flan-T5Large on MMLU auxiliary train-
+ing data (Hendrycks et al., 2021) in Table 7. Due to
+the limitation of the computational resources, we
+do not include the fine-tuning result of Flan-T5XL.
+We take batch size as 32, learning rate as 5e-5, and
+epochs as 3 in fine-tuning. In general, the LM that
+has already been massively multi-task instruction-
+finetuned, such as Flan-T5, improves little from
+fine-tuning on extra tasks but benefits greatly from
+our AAR. The results further validate the power of
+zero-shot retrieval augmentation.
+243
+1 2 3 4 5 6 7 8 9 10
+Number of documents
 36
 38
 40
 42
-Step
-HD
-(b) Hausdorff distance for muscle ultrasound
-1
-2
-3
-4
-5
-86
-87
-Step
-DS
-(c) Dice score for abdominal CT
-1
-2
-3
-4
-5
-6.5
-7
-Step
-HD
-(d) Hausdorff distance for abdominal CT
-1
-2
-3
-4
-5
-82
-83
-84
-85
-Step
-DS
-(e) Dice score for prostate MR
-1
-2
-3
-4
-5
-4.5
-5
-5.5
-Step
-HD
-(f) Hausdorff distance for prostate MR
-1
-2
-3
-4
-5
-86
-88
-90
-92
-Step
-DS
-(g) Dice score for brain MR
-1
-2
-3
-4
-5
-8
-10
-12
-Step
-HD
-(h) Hausdorff distance for brain MR
-Figure 10: Segmentation performance per step. “Diff.” represents standard diffusion.
-“Diff. sc. xt” and “Diff. sc. xt+1” represents self-conditioning from Chen et al. (2022b)
-and Watson et al. (2023), respectively. “Diff. rec. xt+1” and “Diff. rec. xT ” represents
-recycling from Fu et al. (2023) and the proposed recycling in this work, respectively. The
-sampler is DDIM.
-544
-
-Recycling for Medical Image Segmentation with Diffusion Denoising Models
-F.2 Comparison to Non-diffusion Models
-Ensemble
-No diff.
-Diff. rec.
-DS: 86.91
-HD: 3.74
-DS: 89.62
-HD: 3.00
-DS: 79.28
-HD: 22.85
-DS: 90.86
-HD: 4.12
-DS: 90.39
-HD: 2.45
-DS: 82.11
-HD: 108.69
-DS: 86.55
-HD: 4.58
-DS: 86.23
-HD: 35.90
-DS: 89.03
-HD: 3.00
-DS: 90.06
-HD: 2.83
-DS: 85.68
-HD: 5.66
-DS: 90.62
-HD: 4.58
-Figure 11: Segmentation error of non-diffusion-based and diffusion-based models
-for tumour in brain MR. “No diff.” represents non-diffusion model. “Diff. rec. xT ”
-represents the diffusion model with proposed recycling. The ground truth segmentation is
-visualised. For each point on the surface, the distance to the surface of predicted segmentation
-is calculated and displayed with red color. The Dice score (DS) and Hausdorff distance (HD)
-for each sample are labeled at bottom.
-545
-
-Fu et al.
-F.3 Ablation Studies
-Table 10: Diffusion with different training variance schedule
-
+44
+46
+MMLU Accuracy
+Standalone LM
+Lt=Flan-T5Base
+(a) Flan-T5Base w/ AARANCE.
+1 2 3 4 5 6 7 8 9 10
+Number of documents
+44
+46
+48
+50
+52
+MMLU Accuracy
+Standalone LM
+Lt=Flan-T5Large
+(b) Flan-T5Large w/ AARANCE.
+1 2 3 4 5 6 7 8 9 10
+Number of documents
+50
+52
+54
+56
+58
+MMLU Accuracy
+Standalone LM
+Lt=Flan-T5XL
+(c) Flan-T5XL w/ AARANCE.
+Figure 9: Relationship between LM’s performance and the number of augmentation documents.
+Source/target Task
+Category
+# Queries
+Ts
+MSMARCO QA
+Open Domain QA
+148122
+KILT-FEVER
+Fact Checking
+10444
+KILT-WNED
+Entity Linking
+3396
+KILT-T-REx
+Slot Filling
+5000
+KILT-TriviaQA
+Open Domain QA
+5359
+KILT-Wizard of Wikipedia
+Dialogue
+3054
+Tt
+MMLU
+Multi-task Language Understanding
+1531
+PopQA
+Open Domain QA
+14267
+Table 6: Statistics of source and target tasks.
+Methods
+MMLU
+All
+Hum.
+Soc. Sci.
+STEM
+Other
+Flan-T5Base
+36.1
+40.4
+39.8
+27.0
+40.6
+Flan-T5Base Fine-tuning
+36.1
+38.9
+41.2
+27.9
+39.9
+Flan-T5Base w/ Contriever
+43.7
+44.4
+45.0
+36.4
+51.1
+Flan-T5Base w/ ANCE
+43.0
+44.2
+44.3
+34.5
+51.9
+Flan-T5Base w/ AARContriever (Ours)
+44.4
+44.7
+47.7
+35.8
+52.2
+Flan-T5Base w/ AARANCE (Ours)
+44.8
+42.2
+46.4
+39.0
+53.2
+Flan-T5Large
+45.1
+47.7
+53.5
+34.4
+49.2
+Flan-T5Large Fine-tuning
+45.3
+47.6
+54.1
+35.2
+48.7
+Flan-T5Large w/ Contriever
+50.7
+50.5
+56.4
+38.9
+61.1
+Flan-T5Large w/ ANCE
+49.2
+49.3
+56.7
+38.1
+57.2
+Flan-T5Large w/ AARContriever (Ours)
+51.8
+50.8
+59.7
+39.4
+61.8
+Flan-T5Large w/ AARANCE (Ours)
+50.4
+48.0
+58.1
+39.3
+60.2
+Flan-T5XL
+51.2
+55.5
+57.4
+38.1
+58.7
+Flan-T5XL w/ Contriever
+56.4
+57.3
+66.1
+43.9
+63.2
+Flan-T5XL w/ ANCE
+55.3
+55.9
+64.0
+41.5
+64.9
+Flan-T5XL w/ AARContriever (Ours)
+56.7
+57.7
+65.4
+43.6
+65.1
+Flan-T5XL w/ AARANCE (Ours)
+56.2
+59.4
+64.8
+41.5
+64.9
+InstructGPT
+60.2
+65.7
+68.0
+46.1
+66.5
+InstructGPT w/ Contriever
+60.5
+62.0
+71.8
+44.3
+70.1
+InstructGPT w/ ANCE
+61.6
+62.4
+73.4
+47.6
+68.6
+InstructGPT w/ AARContriever (Ours)
+61.5
+64.5
+73.1
+45.0
+69.9
+InstructGPT w/ AARANCE (Ours)
+62.2
+62.0
+72.0
+49.2
+70.7
+Table 7: Fine-tuning results on MMLU. We use the official auxiliary training data of MMLU to fine-tune the LM.
+243
+ACL 2023 Responsible NLP Checklist
+A
+For every submission:
+□ A1. Did you describe the limitations of your work?
+Section 8
+□ A2. Did you discuss any potential risks of your work?
+No potential risks
+□ A3. Do the abstract and introduction summarize the paper’s main claims?
+Section 0 and 1
+□ A4. Have you used AI writing assistants when working on this paper?
+Left blank.
+B
+□ Did you use or create scientiﬁc artifacts?
+Section 4.1
+□ B1. Did you cite the creators of artifacts you used?
+Section 4.1
+□ B2. Did you discuss the license or terms for use and / or distribution of any artifacts?
+Not applicable. Left blank.
+□ B3. Did you discuss if your use of existing artifact(s) was consistent with their intended use, provided
+that it was speciﬁed? For the artifacts you create, do you specify intended use and whether that is
+compatible with the original access conditions (in particular, derivatives of data accessed for research
+purposes should not be used outside of research contexts)?
+Not applicable. Left blank.
+□ B4. Did you discuss the steps taken to check whether the data that was collected / used contains any
+information that names or uniquely identiﬁes individual people or offensive content, and the steps
+taken to protect / anonymize it?
+Not applicable. Left blank.
+□ B5. Did you provide documentation of the artifacts, e.g., coverage of domains, languages, and
+linguistic phenomena, demographic groups represented, etc.?
+Not applicable. Left blank.
+□ B6. Did you report relevant statistics like the number of examples, details of train / test / dev splits,
+etc. for the data that you used / created? Even for commonly-used benchmark datasets, include the
+number of examples in train / validation / test splits, as these provide necessary context for a reader
+to understand experimental results. For example, small differences in accuracy on large test sets may
+be signiﬁcant, while on small test sets they may not be.
+Section 4.1
+C
+□ Did you run computational experiments?
+Section 5
+□ C1. Did you report the number of parameters in the models used, the total computational budget
+(e.g., GPU hours), and computing infrastructure used?
+Section 5
+The Responsible NLP Checklist used at ACL 2023 is adopted from NAACL 2022, with the addition of a question on AI writing
+assistance.
+243
+□ C2. Did you discuss the experimental setup, including hyperparameter search and best-found
+hyperparameter values?
+Section 4.2 and A
+□ C3. Did you report descriptive statistics about your results (e.g., error bars around results, summary
+statistics from sets of experiments), and is it transparent whether you are reporting the max, mean,
+etc. or just a single run?
+Section 5
+□ C4. If you used existing packages (e.g., for preprocessing, for normalization, or for evaluation), did
+you report the implementation, model, and parameter settings used (e.g., NLTK, Spacy, ROUGE,
+etc.)?
+Not applicable. Left blank.
+D
+□ Did you use human annotators (e.g., crowdworkers) or research with human participants?
+Left blank.
+□ D1. Did you report the full text of instructions given to participants, including e.g., screenshots,
+disclaimers of any risks to participants or annotators, etc.?
+No response.
+□ D2. Did you report information about how you recruited (e.g., crowdsourcing platform, students)
+and paid participants, and discuss if such payment is adequate given the participants’ demographic
+(e.g., country of residence)?
+No response.
+□ D3. Did you discuss whether and how consent was obtained from people whose data you’re
+using/curating? For example, if you collected data via crowdsourcing, did your instructions to
+crowdworkers explain how the data would be used?
+No response.
+□ D4. Was the data collection protocol approved (or determined exempt) by an ethics review board?
+No response.
+□ D5. Did you report the basic demographic and geographic characteristics of the annotator population
+that is the source of the data?
+No response.
+243

@@ -1,0 +1,90 @@
+2024-04-25 16:24:07.744 | DEBUG    | __main__:<module>:89 - 调试代码
+2024-04-25 16:24:07.744 | INFO     | __main__:<module>:90 - 输出信息
+2024-04-25 16:24:07.744 | SUCCESS  | __main__:<module>:91 - 输出成功
+2024-04-25 16:24:07.745 | WARNING  | __main__:<module>:92 - 错误警告
+2024-04-25 16:24:07.745 | ERROR    | __main__:<module>:93 - 代码错误
+2024-04-25 16:24:07.745 | CRITICAL | __main__:<module>:94 - 崩溃输出
+2024-04-25 16:24:07.745 | INFO     | __main__:<module>:100 - ----原始测试----
+2024-04-25 16:35:06.887 | INFO     | __main__:search_title:465 - paper标题模式确认，1. Introduction
+2024-04-25 16:37:36.565 | INFO     | __main__:search_title:467 - paper标题模式确认，1. Introduction
+2024-04-25 16:37:45.503 | INFO     | __main__:search_title:467 - paper标题模式确认，1. Introduction
+2024-04-25 16:37:55.407 | INFO     | __main__:search_title:467 - paper标题模式确认，1. Introduction
+2024-04-25 16:38:26.620 | INFO     | __main__:search_title:467 - paper标题模式确认，1. Introduction
+2024-04-25 16:38:47.854 | INFO     | __main__:search_title:467 - paper标题模式确认，1. Introduction
+2024-04-25 16:48:40.275 | ERROR    | __main__:cut_table_str:363 - 切除部分是非表格内容
+2024-04-25 16:48:40.279 | INFO     | __main__:search_title:482 - paper标题模式确认，1. Introduction
+2024-04-25 16:53:05.793 | ERROR    | __main__:cut_table_str:363 - 切除部分是非表格内容: Parameter
+Value
+Optimiser
+
+2024-04-25 16:53:05.796 | INFO     | __main__:search_title:482 - paper标题模式确认，1. Introduction
+2024-04-25 16:53:17.985 | WARNING  | __main__:cut_table_str_before:450 - 切除部分是非表格部分，停止切除held to be an illegal act...
+
+2024-04-25 16:53:17.986 | WARNING  | __main__:cut_table_str_before:450 - 切除部分是非表格部分，停止切除Source/target Task
+Category
+# Queries
+Ts
+MSMARCO QA
+Open Domain QA
+148122
+KILT-FEVER
+Fact Checking
+10444
+KILT-WNED
+Entity Linking
+3396
+KILT-T-REx
+Slot Filling
+5000
+KILT-TriviaQA
+Open Domain QA
+5359
+KILT-Wizard of Wikipedia
+Dialogue
+3054
+Tt
+MMLU
+Multi-task Language Understanding
+1531
+PopQA
+Open Domain QA
+14267
+
+2024-04-25 16:53:17.989 | INFO     | __main__:search_title:486 - paper标题模型确认，
+1
+Introduction
+2024-04-25 19:24:28.248 | WARNING  | __main__:cut_table_str_before:457 - 切除部分是非表格部分，停止切除held to be an illegal act...
+
+2024-04-25 19:24:28.250 | WARNING  | __main__:cut_table_str_before:457 - 切除部分是非表格部分，停止切除Source/target Task
+Category
+# Queries
+Ts
+MSMARCO QA
+Open Domain QA
+148122
+KILT-FEVER
+Fact Checking
+10444
+KILT-WNED
+Entity Linking
+3396
+KILT-T-REx
+Slot Filling
+5000
+KILT-TriviaQA
+Open Domain QA
+5359
+KILT-Wizard of Wikipedia
+Dialogue
+3054
+Tt
+MMLU
+Multi-task Language Understanding
+1531
+PopQA
+Open Domain QA
+14267
+
+2024-04-25 19:24:28.252 | INFO     | __main__:search_title:495 - paper标题模型确认，
+1
+Introduction
