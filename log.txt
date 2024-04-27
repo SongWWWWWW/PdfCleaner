@@ -1,1227 +1,1187 @@
-Denoising Diffusion Probabilistic Models
-Jonathan Ho
-UC Berkeley
-jonathanho@berkeley.edu
-Ajay Jain
-UC Berkeley
-ajayj@berkeley.edu
-Pieter Abbeel
-UC Berkeley
-pabbeel@cs.berkeley.edu
+Post-training Quantization on Diffusion Models
+Yuzhang Shang1,4*, Zhihang Yuan2*, Bin Xie1, Bingzhe Wu3, Yan Yan1†
+1Illinois Institute of Technology, 2Houmo AI, 3Tencent AI Lab, 4Cisco Research
+{yshang4, bxie9}@hawk.iit.edu, zhihang.yuan@huomo.ai
+yuzshang@cisco.com, bingzhewu@tencent.com, yyan34@iit.edu
 ###
 Abstract
-a class of latent variable models inspired by considerations from nonequilibrium
-thermodynamics. Our best results are obtained by training on a weighted variational
-bound designed according to a novel connection between diffusion probabilistic
-models and denoising score matching with Langevin dynamics, and our models nat-
-urally admit a progressive lossy decompression scheme that can be interpreted as a
-generalization of autoregressive decoding. On the unconditional CIFAR10 dataset,
-we obtain an Inception score of 9.46 and a state-of-the-art FID score of 3.17. On
-256x256 LSUN, we obtain sample quality similar to ProgressiveGAN. Our imple-
-mentation is available at https://github.com/hojonathanho/diffusion.
+have recently achieved significant accomplishments in gen-
+erating realistic and diverse data. Unfortunately, the gener-
+ation process of current denoising diffusion models is noto-
+riously slow due to the lengthy iterative noise estimations,
+which rely on cumbersome neural networks.
+It prevents
+the diffusion models from being widely deployed, especially
+on edge devices. Previous works accelerate the generation
+process of diffusion model (DM) via finding shorter yet ef-
+fective sampling trajectories. However, they overlook the
+cost of noise estimation with a heavy network in every iter-
+ation. In this work, we accelerate generation from the per-
+spective of compressing the noise estimation network. Due
+to the difficulty of retraining DMs, we exclude mainstream
+training-aware compression paradigms and introduce post-
+training quantization (PTQ) into DM acceleration. How-
+ever, the output distributions of noise estimation networks
+change with time-step, making previous PTQ methods fail
+in DMs since they are designed for single-time step sce-
+narios. To devise a DM-specific PTQ method, we explore
+PTQ on DM in three aspects: quantized operations, cali-
+bration dataset, and calibration metric. We summarize and
+use several observations derived from all-inclusive investi-
+gations to formulate our method, which especially targets
+the unique multi-time-step structure of DMs. Experimen-
+tally, our method can directly quantize full-precision DMs
+into 8-bit models while maintaining or even improving their
+performance in a training-free manner. Importantly, our
+method can serve as a plug-and-play module on other fast-
+sampling methods, e.g., DDIM [24]. The code is available
+at https://github.com/42Shawn/PTQ4DM.
 ###
-1 Introduction
-Deep generative models of all kinds have recently exhibited high quality samples in a wide variety
-of data modalities. Generative adversarial networks (GANs), autoregressive models, ﬂows, and
-variational autoencoders (VAEs) have synthesized striking image and audio samples [14, 27, 3,
-58, 38, 25, 10, 32, 44, 57, 26, 33, 45], and there have been remarkable advances in energy-based
-modeling and score matching that have produced images comparable to those of GANs [11, 55].
-Figure 1: Generated samples on CelebA-HQ 256 × 256 (left) and unconditional CIFAR10 (right)
-34th Conference on Neural Information Processing Systems (NeurIPS 2020), Vancouver, Canada.
-arXiv:2006.11239v2  [cs.LG]  16 Dec 2020
+1. Introduction
+Recently, denoising diffusion (also dubbed score-based)
+generative models [11, 38, 38, 40] have achieved phe-
+nomenal success in various generative tasks, such as im-
+* Equal contribution. † Corresponding author.
+ages [11, 40, 24], audio [21], video [35], and graphs [25].
+Besides these fundamental tasks, their flexibility of imple-
+mentation on downstream tasks is also attractive, e.g., they
+are effectively introduced for super-resolution [28, 15], in-
+painting [40, 15], and image-to-image translation [30]. Dif-
+fusion models (DMs) have achieved superior performances
+on most of these tasks and applications, both concern-
+ing quality and diversity, compared with historically SoTA
+Generative Adversarial Networks (GANs) [9].
+A diffusion process transforms real data gradually into
+Gaussian noise, and then the process is reversed to generate
+real data from Gaussian noise (denoising process) [11, 43].
+Particularly, the denoising process requires iterating the
+noise estimation (also known as a score function [40])
+via a cumbersome neural network over thousands of time-
+steps. While it has a compelling quantity of images, its
+long iterative process and high inference cost for gener-
+ating samples make it undesirable.
+Thus, increasing the
+speed of this generation process is now an active area of re-
+search [4, 29, 24, 40, 2, 18]. To accelerate diffusion models,
+researchers propose several approaches, which mainly fo-
+cus on sample trajectory learning for faster sampling strate-
+gies. For example, Chen et al. [4] and San-Roman et al. [29]
+propose faster step size schedules for VP diffusions that
+still yield relatively good quality/diversity metrics; Song et
+al. [37] adopt implicit phases in the denoising process; Bao
+et al. [2] and Lu et al. [18] derive analytical approximations
+to simplify the generation process.
+Our study suggests that two orthogonal factors slow
+down the denoising process: i) lengthy iterations for sam-
+pling images from noise, and ii) a cumbersome network for
+estimating noise in each iteration. Previously DM accelera-
+tion methods only focus on the former [4, 29, 24, 40, 2, 18],
+but overlook the latter. From the perspective of network
+compression, many popular network quantization and prun-
+ing methods follow a simple pipeline: training the origi-
+nal model and then fine-tuning the quantized/pruned com-
+pressed model [17, 31].
+Particularly, this training-aware
+compression pipeline requires a full training dataset and
+many computation resources to perform end-to-end back-
+propagation. For DMs, however, 1) training data are not
+arXiv:2211.15736v3  [cs.CV]  16 Mar 2023
 
-−!
-
-xT
-−! · · · −!
-xt
-−−−−−! xt−1 −! · · · −! x0
-
-p✓(xt−1|xt)
-
-Figure 2: The directed graphical model considered in this work.
-This paper presents progress in diffusion probabilistic models [53]. A diffusion probabilistic model
-(which we will call a “diffusion model” for brevity) is a parameterized Markov chain trained using
-variational inference to produce samples matching the data after ﬁnite time. Transitions of this chain
-are learned to reverse a diffusion process, which is a Markov chain that gradually adds noise to the
-data in the opposite direction of sampling until signal is destroyed. When the diffusion consists of
-small amounts of Gaussian noise, it is sufﬁcient to set the sampling chain transitions to conditional
-Gaussians too, allowing for a particularly simple neural network parameterization.
-Diffusion models are straightforward to deﬁne and efﬁcient to train, but to the best of our knowledge,
-there has been no demonstration that they are capable of generating high quality samples. We
-show that diffusion models actually are capable of generating high quality samples, sometimes
-better than the published results on other types of generative models (Section 4). In addition, we
-show that a certain parameterization of diffusion models reveals an equivalence with denoising
-score matching over multiple noise levels during training and with annealed Langevin dynamics
-during sampling (Section 3.2) [55, 61]. We obtained our best sample quality results using this
-parameterization (Section 4.2), so we consider this equivalence to be one of our primary contributions.
-Despite their sample quality, our models do not have competitive log likelihoods compared to other
-likelihood-based models (our models do, however, have log likelihoods better than the large estimates
-annealed importance sampling has been reported to produce for energy based models and score
-matching [11, 55]). We ﬁnd that the majority of our models’ lossless codelengths are consumed
-to describe imperceptible image details (Section 4.3). We present a more reﬁned analysis of this
-phenomenon in the language of lossy compression, and we show that the sampling procedure of
-diffusion models is a type of progressive decoding that resembles autoregressive decoding along a bit
-ordering that vastly generalizes what is normally possible with autoregressive models.
+NDTC
+Calibration
+Figure 1. Performance summary on ImageNet64.
+The X-axis
+and Y-axis denote the performance w.r.t.FID score and Inception
+Score, respectively. Note that the center (not the boundary) of the
+dot corresponds to the model performance. The size of the dots
+denotes theoretical inference time.
+always ready-to-use due to privacy and commercial con-
+cerns; 2) the training process is extremely expensive. For
+example, there is no access to the training data for the
+industry-developed text-to-image models Dall·E2 [26] and
+Imagen [27]. Even if one can access their datasets, fine-
+tuning them also consumes hundreds of thousands of GPU
+hours. Those two obstacles make training-aware compres-
+sion not suitable for DMs.
+Training-free network compression techniques are what
+we need for DM acceleration. Therefore, we propose to
+introduce post-training quantization (PTQ) [22, 3, 17] into
+DM acceleration.
+In a training-free manner, PTQ can
+not only speed up the computation of the denoising pro-
+cess but also reduce the resources to store the diffusion
+model weight, which is required in DM acceleration. Al-
+though PTQ has many attractive benefits, its implementa-
+tion in DMs remains challenging. The main reason is that
+the structure of DMs is hugely different from previously
+PTQ-implemented structures (e.g., CNN and ViT for image
+recognition). Specifically, the output distributions of noise
+estimation networks change with time-step, making previ-
+ous PTQ methods fail in DMs since they are designed for
+single-time-step scenarios.
+This study attempts to answer the following fundamen-
+tal question: How does the design of the core ingredients
+of the PTQ for the DMs process (e.g., quantized operation
+selection, calibration set collection, and calibration metric)
+affect the final performance of the quantized diffusion mod-
+els? To this end, we analyze the PTQ and DMs individually
+and correlatedly. We find that simple generalizations of pre-
+vious PTQ methods to DMs lead to huge performance drops
+due to output distribution discrepancies w.r.t.time-step in
+the denoising process. In other words, noise estimation net-
+works rely on time-step, which makes their output distribu-
+tions change with time-step. This means that a key mod-
+ule of the previous PTQ calibration, cannot be used in our
+case. Based on the above observations, we devise a DM-
+specific calibration method, termed Normally Distributed
+Time-step Calibration (NDTC), which first samples a set of
+time-steps from a skew normal distribution, and then gen-
+erates calibration samples in terms of sampled time-steps
+by the denoising process. In this way, the time-step dis-
+crepancy in the calibration set is enhanced, which improves
+the performance of PTQ4DM. Finally, we propose a novel
+DM acceleration method, Post-Training for Diffusion Mod-
+els (PTQ4DM) via incorporating all the explorations.
+Overall, the contributions of this paper are three-fold:
+(i) To accelerate denoising diffusion models, we introduce
+PTQ into DM acceleration where noise estimation networks
+are directly quantized in a post-training manner. To the best
+of our knowledge, this is the first work to investigate dif-
+fusion model acceleration from the perspective of training-
+free network compression. (ii) After all-inclusively investi-
+gations of PTQ and DMs, we observe the performance drop
+induced by PTQ for DMs can be attributed to the discrep-
+ancy of output distributions in various time-steps. Targeting
+this observation, we explore PTQ from different aspects and
+propose PTQ4DM. (iii) Experimentally, PTQ4DM can quan-
+tize the pre-trained diffusion models to 8-bit without sig-
+nificant performance loss for the first time. Importantly,
+PTQ4DM can serve as a plug-and-play module for other
+SoTA DM acceleration methods, as shown in Fig. 1.
 ###
-2 Background
-Diffusion models [53] are latent variable models of the form pθ(x0) :=
-R
-pθ(x0:T ) dx1:T , where
-x1, . . . , xT are latents of the same dimensionality as the data x0 ∼ q(x0). The joint distribution
-pθ(x0:T ) is called the reverse process, and it is deﬁned as a Markov chain with learned Gaussian
-transitions starting at p(xT ) = N(xT ; 0, I):
-pθ(x0:T ) := p(xT )
-T
-Y
-t=1
-pθ(xt−1|xt),
-pθ(xt−1|xt) := N(xt−1; µθ(xt, t), Σθ(xt, t))
+2. Related Work
+###
+2.1. Diffusion Model Acceleration
+Due to the long iterative process in conjunction with
+the high cost of denoising via networks, diffusion mod-
+els cannot be widely implemented. To accelerate the dif-
+fusion probabilistic models (DMs), previous works pursue
+finding shorter sampling trajectories while maintaining the
+DM performance. Chen et al. [4] introduce grid search and
+find an effective trajectory with only six time-steps. How-
+ever, the grid search approach can not be generalized into
+very long trajectories subject to its exponentially growing
+time complexity. Watson et al. [41] model the trajectory
+searching as a dynamic programming problem.
+Song et
+al. [39] construct a class of non-Markovian diffusion pro-
+cesses that lead to the same training objective, but whose
+reverse process can be much faster to sample from.
+As
+for DMs with continuous timesteps (i.e., score-based per-
+spective [40]), Song et al. [38, 40] formulate the DM in of
+form of an ordinary differential equation (ODE), and im-
+prove sampling efficiency via utilizing faster ODE solver.
+Jolicoeur-Martineau et al. [14] introduce an advanced SDE
+solver to accelerate the reverse process via an adaptively
+larger sampling rate. Bao et al. [2] estimate the variance
+and KL divergence using the Monte Carlo method and a
+
+pretrained score-based model with derived analytic forms,
+which are simplified from the score-function. In addition to
+those training-free methods, Luhman & Luhman [19] com-
+press the reverse denoising process into a single-step model;
+San-Roman [29] dynamically adjust the trajectory during
+inference. Nevertheless, implementing those methods re-
+quires additional training after obtaining a pretrained DM,
+which makes them less desirable in most situations. In sum-
+mary, all those DM acceleration methods can be categorized
+into finding effective sampling trajectories.
+However, we show in this paper that, in addition to find-
+ing short sampling trajectories, diffusion models can be
+further accelerated through network compression for each
+noise estimation iteration. Note that our method PTQ4DM is
+an orthogonal path with those above-mentioned fast sam-
+pling methods, which means it can be deployed as a plug-
+and-play module for those methods.
+To the best of our
+knowledge, our work is the first study on quantizing dif-
+fusion models in a post-training manner.
+###
+2.2. Post-training Quantization
+Quantization is one of the most effective ways to com-
+press a neural network. There are two types of quantiza-
+tion methods: Quantization-aware training (QAT) and Post-
+training quantization (PTQ). QAT [13, 8, 32, 33] consid-
+ers the quantization in the network training phase. While
+PTQ [22] quantizes the network after training.
+As PTQ
+consumes much less time and computation resources, it is
+widely used in network deployment.
+Most of the work of PTQ is to set the quantization pa-
+rameters for weights and activcations in each layer. Take
+uniform quantization as an example, the quantization pa-
+rameters include scaling factor s and zero point z.
+A
+floating-point value x is quantized to integer value xint ac-
+cording to the parameters:
+xint = clamp(⌊x
+s ⌉ − z, pmin, pmax).
 (1)
-What distinguishes diffusion models from other types of latent variable models is that the approximate
-posterior q(x1:T |x0), called the forward process or diffusion process, is ﬁxed to a Markov chain that
-gradually adds Gaussian noise to the data according to a variance schedule β1, . . . , βT :
-q(x1:T |x0) :=
-T
-Y
-t=1
-q(xt|xt−1),
-q(xt|xt−1) := N(xt;
+The clamp function clip the rounded value ⌊ x
+s ⌉ − z to the
+range of [pmin, pmax]. In order to set quantization parame-
+ters for the weight tensor and the activation tensor in a layer,
+a simple but effective way is to select the quantization pa-
+rameters that minimize the MSE of the tensors before and
+after quantization [1, 5, 42, 12]. Other metrics, such as L1
+distance, cosine distance, and KL divergence, can also be
+used to evaluate the distance of the tensors before and after
+quantization [20, 44].
+In order to calculate the activations in the network, a
+small number of calibration samples should be used as input
+in PTQ. The selected quantization parameters are dependent
+with the selection of these calibration samples. [12, 17, 23]
+demonstrate the effect of the number of the calibration sam-
+ples. Zero-shot quantization (ZSQ) [3, 10, 45] is a special
+case of PTQ. ZSQ generates the calibration dataset accord-
+ing to information recorded in the network, such as the
+mean and var in batch normalization layer. They gener-
+ate the input sample by gradient descent method to make
+the distribution of the activations in network similar to the
+distribution of real samples. The image generation process
+from noise in diffusion model only uses the network infer-
+ence, which is quite different from previous ZSQ methods.
+###
+3. PTQ on Diffusion Models
+###
+3.1. Preliminaries
+Diffusion Models.
+The diffusion probabilistic model
+(DPM) is initially introduced by Sohl-Dickstein et al. [36],
+where the DPM is trained by optimizing the variational
+bound LVLB. Here, we briefly review the diffusion model
+to illustrate the difference from traditional models. Here,
+we briefly review the diffusion model, especially its lengthy
+diffusion and denoising process. We highlight that those
+properties make it difficult to simply generalize common
+PTQ methods into diffusion models simply in Sec. 3.2.
+Given a real data distribution x0
+∼ q(x0), we de-
+fine the diffusion process that gradually adds a small
+amount of isotropic Gaussian noise with a variance sched-
+ule β1, ..., βT
+∈ (0, 1) to produce a sequence of latent
+x1, ..., xT , which is fixed to a Markov chain. When T is
+sufficiently large T ∼ ∞ and a well-behaved schedule of
+βt, xT is equivalent to an isotropic Gaussian distribution.
+q(xt|xt−1) = N(xt;
 p
 1 − βtxt−1, βtI)
 (2)
-Training is performed by optimizing the usual variational bound on negative log likelihood:
-E [− log pθ(x0)] ≤ Eq
-
-− log pθ(x0:T )
-q(x1:T |x0)
-
-= Eq
-
-− log p(xT ) −
-X
-t≥1
-log pθ(xt−1|xt)
+q(x1:T |x0) =
+T
+Y
+t=1
 q(xt|xt−1)
-
-=: L (3)
-The forward process variances βt can be learned by reparameterization [33] or held constant as
-hyperparameters, and expressiveness of the reverse process is ensured in part by the choice of
-Gaussian conditionals in pθ(xt−1|xt), because both processes have the same functional form when
-βt are small [53]. A notable property of the forward process is that it admits sampling xt at an
-arbitrary timestep t in closed form: using the notation αt := 1 − βt and ¯αt := Qt
-s=1 αs, we have
+(3)
+A notable [11] property of the diffusion process admits us to
+sample xt at an arbitrary timestep t via directly conditioned
+on the input x0. Let αt = 1 − βt and ¯αt = QT
+i=1 αi:
 q(xt|x0) = N(xt; √¯αtx0, (1 − ¯αt)I)
 (4)
-2
-Efﬁcient training is therefore possible by optimizing random terms of L with stochastic gradient
-descent. Further improvements come from variance reduction by rewriting L (3) as:
-Eq
-
-DKL(q(xT |x0) ∥ p(xT ))
+Since q(xt−1|xt) depends on the data distribution q(x0),
+which is intractable. Therefore, we need to parameterize a
+neural network to approximate it:
+pθ(xt−1|xt) = N(xt−1; µθ(xt, t), Σθ(xt, t))
+(5)
+We utilize the variational lower bound to optimize the
+negative log-likelihood. LVLB =
+Eq(x0:T )
+h
+log q(x1:T |x0)
+pθ(x0:T )
+i
+≥ −Eq(x0) log pθ(x0)
+(6)
+The objective function of the variational lower bound can
+be further rewritten to be a combination of several KL-
+
+Conv
+ResBlock
+Upsampling
+Downsampling
+Concat
+Sample
+...
+...
+UNet
+Decoder
+Denoising Process
+Diffusion Process
+...
+...
+Encoder
+Figure 2. Brief illustration of Diffusion Model. The inference of diffusion models is extremely slow due to their two fundamental character-
+istics: (1, Left) the lengthy iterative process for denoising from noise input to synthetic images; and (2, Right) the cumbersome networks
+for estimating the noise in each denoising iteration.
+divergence and entropy terms (more details in [36]).
+LVLB = Eq[DKL(q(xT |x0) ∥ pθ(xT ))
 |
 {z
 }
 LT
-+
-X
-t>1
-DKL(q(xt−1|xt, x0) ∥ pθ(xt−1|xt))
-|
-{z
-}
-Lt−1
 − log pθ(x0|x1)
 |
 {z
 }
 L0
-
-(5)
-(See Appendix A for details. The labels on the terms are used in Section 3.) Equation (5) uses KL
-divergence to directly compare pθ(xt−1|xt) against forward process posteriors, which are tractable
-when conditioned on x0:
-q(xt−1|xt, x0) = N(xt−1; ˜µt(xt, x0), ˜βtI),
-(6)
-where
-˜µt(xt, x0) :=
-√¯αt−1βt
-1 − ¯αt
-x0 +
-√αt(1 − ¯αt−1)
-1 − ¯αt
-xt
-and
++
+T
+X
+t=2
+DKL(q(xt−1|xt, x0) ∥ pθ(xt−1|xt))
+|
+{z
+}
+Lt−1
+]
+(7)
+L0
+uses
+a
+separate
+discrete
+decoder
+derived
+from
+N(x0; µθ(x1, 1), Σθ(x1, 1)). LT does not depend on θ,
+it is close to zero if q(xT |x0) ≈ N(0, I). The remain term
+Lt−1 is a KL-divergence to directly compare pθ(xt−1|xt)
+to diffusion process posterior that is tractable when x0 is
+conditioned,
 ˜βt := 1 − ¯αt−1
 1 − ¯αt
-βt
-(7)
-Consequently, all KL divergences in Eq. (5) are comparisons between Gaussians, so they can be
-calculated in a Rao-Blackwellized fashion with closed form expressions instead of high variance
-Monte Carlo estimates.
-###
-3 Diffusion models and denoising autoencoders
-Diffusion models might appear to be a restricted class of latent variable models, but they allow a
-large number of degrees of freedom in implementation. One must choose the variances βt of the
-forward process and the model architecture and Gaussian distribution parameterization of the reverse
-process. To guide our choices, we establish a new explicit connection between diffusion models
-and denoising score matching (Section 3.2) that leads to a simpliﬁed, weighted variational bound
-objective for diffusion models (Section 3.4). Ultimately, our model design is justiﬁed by simplicity
-and empirical results (Section 4). Our discussion is categorized by the terms of Eq. (5).
-###
-3.1 Forward process and LT
-We ignore the fact that the forward process variances βt are learnable by reparameterization and
-instead ﬁx them to constants (see Section 4 for details). Thus, in our implementation, the approximate
-posterior q has no learnable parameters, so LT is a constant during training and can be ignored.
-###
-3.2 Reverse process and L1:T −1
-Now we discuss our choices in pθ(xt−1|xt) = N(xt−1; µθ(xt, t), Σθ(xt, t)) for 1 < t ≤ T. First,
-we set Σθ(xt, t) = σ2
-t I to untrained time dependent constants. Experimentally, both σ2
-t = βt and
-σ2
-t = ˜βt = 1−¯αt−1
-1−¯αt βt had similar results. The ﬁrst choice is optimal for x0 ∼ N(0, I), and the
-second is optimal for x0 deterministically set to one point. These are the two extreme choices
-corresponding to upper and lower bounds on reverse process entropy for data with coordinatewise
-unit variance [53].
-Second, to represent the mean µθ(xt, t), we propose a speciﬁc parameterization motivated by the
-following analysis of Lt. With pθ(xt−1|xt) = N(xt−1; µθ(xt, t), σ2
-t I), we can write:
-Lt−1 = Eq
- 1
-2σ2
-t
-∥˜µt(xt, x0) − µθ(xt, t)∥2
-
-+ C
+· βt
 (8)
-where C is a constant that does not depend on θ. So, we see that the most straightforward parameteri-
-zation of µθ is a model that predicts ˜µt, the forward process posterior mean. However, we can expand
-Eq. (8) further by reparameterizing Eq. (4) as xt(x0, ϵ) = √¯αtx0 + √1 − ¯αtϵ for ϵ ∼ N(0, I) and
-applying the forward process posterior formula (7):
-Lt−1 − C = Ex0,ϵ
-"
-1
-2σ2
-t
-˜µt
-
-xt(x0, ϵ),
-1
-√¯αt
-(xt(x0, ϵ) −
-√
-1 − ¯αtϵ)
-
-− µθ(xt(x0, ϵ), t)
-
-2#
-(9)
-= Ex0,ϵ
-"
-1
-2σ2
-t
-
-1
-√αt
-
-xt(x0, ϵ) −
-βt
-√1 − ¯αt
-ϵ
-
-− µθ(xt(x0, ϵ), t)
-
-2#
+˜µt(xtx0) :=
+√αt(1 − ¯αt−1)
+1 − ¯αt
+xt +
+√¯αt−1βt
+1 − ¯αt
+x0 (9)
+q(xt−1|xt, x0) := N(xt−1; ˜µ(xt, x0), ˜βtI).
 (10)
-3
-Algorithm 1 Training
-1: repeat
-2:
-x0 ∼ q(x0)
-3:
-t ∼ Uniform({1, . . . , T})
-4:
-ϵ ∼ N(0, I)
-5:
-Take gradient descent step on
-∇θ
-ϵ − ϵθ(√¯αtx0 + √1 − ¯αtϵ, t)
-2
-6: until converged
-Algorithm 2 Sampling
-1: xT ∼ N(0, I)
-2: for t = T, . . . , 1 do
-3:
-z ∼ N(0, I) if t > 1, else z = 0
-4:
-xt−1 =
-1
-√αt
-
-xt −
-1−αt
-√1−¯αt ϵθ(xt, t)
-
-+ σtz
-5: end for
-6: return x0
-Equation (10) reveals that µθ must predict
-1
-√αt
-
-xt −
-βt
-√1−¯αt ϵ
-
-given xt. Since xt is available as
-input to the model, we may choose the parameterization
-µθ(xt, t) = ˜µt
-
-xt,
-1
-√¯αt
-(xt −
-√
-1 − ¯αtϵθ(xt))
-
-=
-1
-√αt
-
-xt −
-βt
-√1 − ¯αt
-ϵθ(xt, t)
-
+This is the training process of the diffusion model. After ob-
+taining the well-trained noise estimation model pθ(xt−1|xt)
+in Eq. 5, given a random noise, we can generate samples
+through the denoising process by iterative sampling xt−1
+from pθ(xt−1|xt) until we receive x0. Detailed informa-
+tion can be found in the surveys [43, 6]. Since the iterative
+process for denoising from noise input to synthetic images
+is extremely long (e.g., pioneer work, DDPM [11] requires
+4000 steps for generating a sample from noise), as illus-
+trated in Fig. 2 (left); and the networks for estimating the
+noise in each denoising iteration is very deep and compli-
+cated, as illustrated in Fig. 2 (right). The inference of the
+diffusion model is expensive.
+Post-training Quantization takes a well-trained network
+and selects the quantization parameters for the weight ten-
+sor and activation tensor in each layer. We use the quantiza-
+tion parameters, scaling factor s, and zero point z to trans-
+form a tensor to the quantized tensor1. One of the most
+1We focus on uniform quantization since it is the most widely used.
+widely used methods to select the parameters is to mini-
+mize the error caused by quantization. The quantization er-
+ror Lquant is formulated as:
+Xsim = s(clamp(⌊Xfp
+s ⌉ − z, pmin, pmax) + z),
 (11)
-where ϵθ is a function approximator intended to predict ϵ from xt. To sample xt−1 ∼ pθ(xt−1|xt) is
-to compute xt−1 =
-1
-√αt
-
-xt −
-βt
-√1−¯αt ϵθ(xt, t)
-
-+σtz, where z ∼ N(0, I). The complete sampling
-procedure, Algorithm 2, resembles Langevin dynamics with ϵθ as a learned gradient of the data
-density. Furthermore, with the parameterization (11), Eq. (10) simpliﬁes to:
-Ex0,ϵ
-
-β2
-t
-2σ2
-t αt(1 − ¯αt)
-ϵ − ϵθ(√¯αtx0 +
-√
-1 − ¯αtϵ, t)
-2
+Lquant = Metric(Xsim, Xfp),
 (12)
-which resembles denoising score matching over multiple noise scales indexed by t [55]. As Eq. (12)
-is equal to (one term of) the variational bound for the Langevin-like reverse process (11), we see
-that optimizing an objective resembling denoising score matching is equivalent to using variational
-inference to ﬁt the ﬁnite-time marginal of a sampling chain resembling Langevin dynamics.
-To summarize, we can train the reverse process mean function approximator µθ to predict ˜µt, or by
-modifying its parameterization, we can train it to predict ϵ. (There is also the possibility of predicting
-x0, but we found this to lead to worse sample quality early in our experiments.) We have shown that
-the ϵ-prediction parameterization both resembles Langevin dynamics and simpliﬁes the diffusion
-model’s variational bound to an objective that resembles denoising score matching. Nonetheless,
-it is just another parameterization of pθ(xt−1|xt), so we verify its effectiveness in Section 4 in an
-ablation where we compare predicting ϵ against predicting ˜µt.
-###
-3.3 Data scaling, reverse process decoder, and L0
-We assume that image data consists of integers in {0, 1, . . . , 255} scaled linearly to [−1, 1]. This
-ensures that the neural network reverse process operates on consistently scaled inputs starting from
-the standard normal prior p(xT ). To obtain discrete log likelihoods, we set the last term of the reverse
-process to an independent discrete decoder derived from the Gaussian N(x0; µθ(x1, 1), σ2
-1I):
-pθ(x0|x1) =
-D
-Y
-i=1
-Z δ+(xi
-0)
-δ−(xi
-0)
-N(x; µi
-θ(x1, 1), σ2
-1) dx
-δ+(x) =
-∞
-if x = 1
-x +
-1
-255
-if x < 1
-δ−(x) =
-−∞
-if x = −1
-x −
-1
-255
-if x > −1
+where Xsim is the de-quantized tensor, and Metric is the
+metric function to evaluate the distance of Xsim and the
+full-precision tensor Xfp. MSE, cosine distance, L1 dis-
+tance, and KL divergence are commonly used metric func-
+tions. The quantization process can be formulated as:
+arg min
+s,z Lquant.
 (13)
-where D is the data dimensionality and the i superscript indicates extraction of one coordinate.
-(It would be straightforward to instead incorporate a more powerful decoder like a conditional
-autoregressive model, but we leave that to future work.) Similar to the discretized continuous
-distributions used in VAE decoders and autoregressive models [34, 52], our choice here ensures that
-the variational bound is a lossless codelength of discrete data, without need of adding noise to the
-data or incorporating the Jacobian of the scaling operation into the log likelihood. At the end of
-sampling, we display µθ(x1, 1) noiselessly.
+We can directly quantize the weight to minimize the
+quantization error, but we cannot get the activation ten-
+sor and quantize it without input. In order to collect the
+full-precision activation tensor, a number of unlabeled input
+samples (calibration dataset) are used as input. The size of
+the calibration dataset (e.g., 128 randomly selected images)
+is much smaller than the training dataset.
+In general, PTQ quantizes a network in three steps: (i)
+Select which operations in the network should be quantized
+and leave the other operations in full-precision. For exam-
+ple, some special functions such as softmax and GeLU often
+takes full-precision [34].Quantizing these operations will
+significantly increase the quantization error and they are not
+very computationally intensive; (ii) Collect the calibration
+samples. The distribution of the calibration samples should
+be as close as possible to the distribution of the real data to
+avoid over-fitting of quantization parameters on calibration
+samples; (iii) Use the proper method to select quantization
+parameters for weight tensors and activation tensors.
+In the next sections, we will explore how to apply PTQ
+to the diffusion model step by step.
 ###
-3.4 Simpliﬁed training objective
-With the reverse process and decoder deﬁned above, the variational bound, consisting of terms derived
-from Eqs. (12) and (13), is clearly differentiable with respect to θ and is ready to be employed for
-4
-Table 1: CIFAR10 results. NLL measured in bits/dim.
-Model
+3.2. Exploration on Operation Selection
+For the diffusion model, we will analyze the image gen-
+eration process to determine which operations should be
+
+Timestep=0.1T
+Timestep=0.9T
+1st Layer
+8th Layer
+15th Layer
+22ed Layer
+Figure 3. Studies on the activation distribution w.r.t.time-step. (Upper) Per (output) channel weight ranges of the first depthwise-separable
+layer in diffusion model on different timestep. In the boxplot, the min and max values, the 2nd and 3rd quartile, and the median are plotted
+for each channel. We only include the layers in the decoder of UNet for noise estimation, as the ranges of the encoder and decoder are quite
+different. (Bottom) Histograms of activations on different time-steps by various layers. We can observe that the distribution of activations
+changes dramatically with time-step, which makes traditional single-time-step PTQ calibration methods inapplicable for diffusion models.
+quantized.
+The diffusion model iteratively generate the
+xt−1 from xt. At each timestep, the inputs of the network
+are xt and t, and the outputs are the mean µ and variance Σ.
+Then xt−1 is sampled from the distribution defined as Eq 5.
+As shown in Figure 2, the network in the diffusion model
+often takes UNet-like CNN architecture. The same as most
+previous PTQ methods, the computation-intensive convolu-
+tion layers and fully-connected layers in the network should
+be quantized. The batch normalization can be folded into
+the convolution layer. The special functions such as SiLU
+and softmax are kept in full-precision.
+There are two more questions for the diffusion model: 1.
+whether the network’s outputs, µ and Σ, can be quantized?
+2. whether the sampled image xt−1 can be quantized? To
+answer the two questions, we only quantize the operation
+generating µ, Σ, or xt−1. As shown in Table 1, we observe
+that they are not sensitive to quantization and we indicate
+that they can be quantized.
+###
+3.3. Exploration on Calibration Dataset
+The second step is to collect the calibration samples for
+quantizing diffusion models. The calibration samples can
+be collected from the training dataset for quantizing other
+networks. However, the training dataset in the diffusion
+model is x0, which is not the network’s input. The real
+Table 1. Exploration on operation selection for 8-bit quantization.
+The diffusion model is for unconditional ImageNet 64x64 image
+generation with a cosine noise schedule. DDIM (250 timesteps) is
+used to generate 10K images. IS is the inception score.
 IS
 FID
-NLL Test (Train)
-Conditional
-EBM [11]
-8.30
-37.9
-JEM [17]
-8.76
-38.4
-BigGAN [3]
-9.22
-14.73
-StyleGAN2 + ADA (v1) [29]
-10.06
-2.67
-Unconditional
-Diffusion (original) [53]
-≤ 5.40
-Gated PixelCNN [59]
-4.60
-65.93
-3.03 (2.90)
-Sparse Transformer [7]
-2.80
-PixelIQN [43]
-5.29
-49.46
-EBM [11]
-6.78
-38.2
-NCSNv2 [56]
-31.75
-NCSN [55]
-8.87±0.12
-25.32
-SNGAN [39]
-8.22±0.05
-21.7
-SNGAN-DDLS [4]
-9.09±0.10
-15.42
-StyleGAN2 + ADA (v1) [29]
-9.74 ± 0.05
-3.26
-Ours (L, ﬁxed isotropic Σ)
-7.67±0.13
-13.51
-≤ 3.70 (3.69)
-Ours (Lsimple)
-9.46±0.11
-3.17
-≤ 3.75 (3.72)
-Table 2: Unconditional CIFAR10 reverse
-process parameterization and training objec-
-tive ablation. Blank entries were unstable to
-train and generated poor samples with out-of-
-range scores.
-Objective
-IS
-FID
-˜µ prediction (baseline)
-L, learned diagonal Σ
-7.28±0.10
-23.69
-L, ﬁxed isotropic Σ
-8.06±0.09
-13.22
-∥˜µ − ˜µθ∥2
-–
-–
-ϵ prediction (ours)
-L, learned diagonal Σ
-–
-–
-L, ﬁxed isotropic Σ
-7.67±0.13
-13.51
-∥˜ϵ − ϵθ∥2 (Lsimple)
-9.46±0.11
-3.17
-training. However, we found it beneﬁcial to sample quality (and simpler to implement) to train on the
-following variant of the variational bound:
-Lsimple(θ) := Et,x0,ϵ
-hϵ − ϵθ(√¯αtx0 +
-√
-1 − ¯αtϵ, t)
-2i
+sFID
+FP
+14.88
+21.63
+17.66
+quantize µ
+15.51
+21.38
+17.41
+quantize Σ
+15.47
+21.96
+17.62
+quantize xt−1
+15.26
+21.94
+17.67
+quantize µ+Σ+xt−1
+14.94
+21.99
+17.84
+input is the generated samples xt. Should we use the gener-
+ated samples in diffusion process or the generated samples
+in denoising process? At what time-step t, should the gen-
+erated samples be collected? This section will explore how
+to make a good calibration dataset.
+By all-inclusively investigating several intuitive PTQ
+baselines,
+we
+obtain
+four
+meaningful
+observations
+(Sec. 3.3.1), which accordingly guide the design of our
+method (Sec. 3.3.2). Experimental results demonstrate that
+our method is efficient and effective.
+Through devised
+PTQ4DM calibration,
+the 8-bit post-training quantized
+diffusion model can perform at the same performance level
+as its full-precision counterpart, e.g., 8-bit diffusion model
+reaches 23.9 FID and 15.8 IS, while 32-bit one has 21.6
+FID and 14.9 IS.
+3.3.1
+Analysis on PTQ Calibration and DMs
+As discussed in Sec. 3.2, we desire the distribution of the
+collected calibration samples should be as close as possible
+to the distribution of the real data. In this way, the calibra-
+tion set can supervise the quantization by minimizing the
+quantization error. Since previous works are implemented
+on single-time-step scenarios (e.g., CNN and ViT for image
+recognition and object detection) [22, 17], they can directly
+collect samples from the real training dataset for quantizing
+networks. Due to the small size of the calibration dataset,
+its collection is extremely sensitive. If the distribution of
+the collected dataset is not representative of the real dataset,
+it can easily lead to overfitting for the calibration task.
+We encounter more challenges when calibrating PTQ for
+DM. Since the inputs of the to-be-quantized network are the
+generated samples xt (t = 0, 1, · · · , T), in which T is a
+large number to maintain the diffusion process converging
+to isotropic Normal distribution. To quantize the diffusion
+model, we are required to design a novel and effective cal-
+ibration dataset collection method in this particular multi-
+time-step scenario. We start by investigating both PTQ cal-
+ibration and DMs, and then obtain the following instructive
+observations.
+Observation 0:
+Distributions of activations changes
+along with time-step changing.
+To understand the output distribution change of diffu-
+sion models, we investigate the activation distribution with
+respect to time-step.
+We would like to analyze the out-
+put distribution at different time-step, for example, given
+t1 = 0.1T and t2 = 0.9T, the output activation distribu-
+tions of pθ(xt1−1|xt1) and pθ(xt2−1|xt2). Theoretically, if
+the distribution changes w.r.t.time-step, it would be difficult
+to implement previous PTQ calibration methods, as they are
+proposed for temporally-invariant calibration [22, 17]. We
+first analyze the overall activation distributions of the noise
+estimation network via boxplot as [22] did, and then we take
+a closer look at the layer-wise distributions via histogram.
+The results are shown in Fig. 3. We can observe that at dif-
+ferent time-steps, the corresponding activation distributions
+have large discrepancies, which makes previous PTQ cal-
+ibration methods [22, 17] inapplicable for multi-time-step
+models (i.e., diffusion models).
+Observation 1: Generated samples in the denoising pro-
+cess are more constructive for calibration.
+In general, there are two directions to generate samples
+for PTQ calibration in diffusion: raw images as input for
+diffusion process, and noise as input for denoising process.
+Previous PTQ methods use raw images, as raw images can
+serve as ground truth, representing the training set’s distri-
+bution. We conduct a pair of comparison experiments, in
+Figure 4. Analyses of this calibration baseline at different time-
+steps. FP Baseline denotes the 32-bit model, which does not re-
+quire to be calibrated.
+Table 2. Results of calibration using noise (input of the denois-
+ing process), image (input of the diffusion process), and samples
+generated by Eq. 3 (Mimicking the diffusion model training).
+IS ↑
+FID ↓
+sFID ↓
+Noise Samples
+13.92
+33.15
+20.38
+Image Samples
+6.90
+128.63
+90.04
+Training-mimic
+12.91
+34.55
+25.18
+which we separately collect two calibration sets with raw
+images for diffusion process and Gaussian noise for denois-
+ing process, and use these two sets to calibrate quantized
+models.
+Another similar intuitive baseline is to use the
+training samples in the diffusion process as calibration data.
+Specifically, we randomly generate a timestep t for each im-
+age x0, and use Eq. 4 according to t to generate xt. In other
+word, collect calibration samples in a “Image + Gaussian
+Noise” manner. We name this scheme as training-mimic
+baseline. The results are listed in Tab. 2. We find that the
+input noises for diffusion process are more constructive for
+calibrating quantized DMs.
+Observation 2: Sample xt close to real image x0 is more
+beneficial for calibration.
+Based on the aforementioned observations, we establish
+a baseline of PTQ calibration for DM based on [23], in
+which the quantized diffusion models are calibrated with
+samples at time-step t, i.e., a set of xt. We refer to this
+straight-forward approach as a naive PTQ-for-DM baseline.
+Specifically, given a set of Gaussion noise xT ∼ N(0, I),
+we use the diffusion model with the full-precision noise es-
+timation network, pθ(xt−1|xt) in Eq. 5 to generate a set
+of xt as calibration set. Then as described in Sec. 3.1, we
+use this collected set to calibrate our quantized noise es-
+timation network, pθ′(xt−1|xt), in which θ′ is the quan-
+tized parameters. We conduct a series of experiments with
+this calibration baseline in different time-steps, i.e., t =
+0.0T, 0.2T, · · · , 1.0T, where T is the total denoising time-
+steps. The results are presented in Fig. 4. We can see that
+the 8-bit model calibrated by this naive baseline cannot syn-
+
+Table 3. Quantitative results of the intuitive baselines for the ob-
+servations and our proposed NDTC calibration method. With our
+method, the performance of PTQ for DM has been significantly
+improved, even exceeding full-precision DM performance w.r.t.IS
+and sFID.
+IS ↑
+FID ↓
+sFID ↓
+Full precision DDIM
+14.88
+21.63
+17.66
+Baseline in Observation 2
+11.92
+49.37
+41.33
+Baseline in Observation 3
+14.99
+26.19
+19.51
+NDTC (ours)
+15.68
+24.26
+17.28
+thesize satisfying images quantitatively and qualitatively.
+Fortunately, there is a windfall from these experiments.
+The PTQ calibration helps more when the time-step t ap-
+proaches the real image x0. There is an intuitive explana-
+tion for this observation. In the denoising process, with t de-
+creasing, the distribution of outputs of network pθ(xt−1|xt)
+is similar to real images’ distribution, which is a more sig-
+nificant phase in the image generation process.
+Observation 3: Instead of a set of samples generated at
+the same time-step, calibration samples should be gen-
+erated with varying time-steps.
+Since our calibration dataset is collected for a multi-
+time-step scenario, while the common methods are pro-
+posed for single-time-step scenarios. We hypothesize that
+the calibration dataset for diffusion models should contain
+the samples with various time-steps, i.e., the calibration set
+should reflect the discrepancy of sample w.r.t.time-step. A
+straightforward way to test this hypothesis is to generate a
+set of uniformly sampled t over the range of time-steps, i.e.,
+ti ∼ U(0, T) (i = 1, 2, · · · , N),
 (14)
-where t is uniform between 1 and T. The t = 1 case corresponds to L0 with the integral in the
-discrete decoder deﬁnition (13) approximated by the Gaussian probability density function times the
-bin width, ignoring σ2
-1 and edge effects. The t > 1 cases correspond to an unweighted version of
-Eq. (12), analogous to the loss weighting used by the NCSN denoising score matching model [55].
-(LT does not appear because the forward process variances βt are ﬁxed.) Algorithm 1 displays the
-complete training procedure with this simpliﬁed objective.
-Since our simpliﬁed objective (14) discards the weighting in Eq. (12), it is a weighted variational
-bound that emphasizes different aspects of reconstruction compared to the standard variational
-bound [18, 22]. In particular, our diffusion process setup in Section 4 causes the simpliﬁed objective
-to down-weight loss terms corresponding to small t. These terms train the network to denoise data
-with very small amounts of noise, so it is beneﬁcial to down-weight them so that the network can
-focus on more difﬁcult denoising tasks at larger t terms. We will see in our experiments that this
-reweighting leads to better sample quality.
-###
-4 Experiments
-We set T = 1000 for all experiments so that the number of neural network evaluations needed
-during sampling matches previous work [53, 55]. We set the forward process variances to constants
-increasing linearly from β1 = 10−4 to βT = 0.02. These constants were chosen to be small
-relative to data scaled to [−1, 1], ensuring that reverse and forward processes have approximately
-the same functional form while keeping the signal-to-noise ratio at xT as small as possible (LT =
-DKL(q(xT |x0) ∥ N(0, I)) ≈ 10−5 bits per dimension in our experiments).
-To represent the reverse process, we use a U-Net backbone similar to an unmasked PixelCNN++ [52,
-48] with group normalization throughout [66]. Parameters are shared across time, which is speciﬁed
-to the network using the Transformer sinusoidal position embedding [60]. We use self-attention at
-the 16 × 16 feature map resolution [63, 60]. Details are in Appendix B.
-###
-4.1 Sample quality
-Table 1 shows Inception scores, FID scores, and negative log likelihoods (lossless codelengths) on
-CIFAR10. With our FID score of 3.17, our unconditional model achieves better sample quality than
-most models in the literature, including class conditional models. Our FID score is computed with
-respect to the training set, as is standard practice; when we compute it with respect to the test set, the
-score is 5.24, which is still better than many of the training set FID scores in the literature.
-5
-Figure 3: LSUN Church samples. FID=7.89
-Figure 4: LSUN Bedroom samples. FID=4.90
-Algorithm 3 Sending x0
-1: Send xT ∼ q(xT |x0) using p(xT )
-2: for t = T − 1, . . . , 2, 1 do
+where U(0, T) is a uniform distribution between 0 and T, N
+is the size of calibration set, and T is the number of time-
+steps in denoising process. Then given a Gaussion noise
+xT ∼ N(0, I) and ti, we utilize the diffusion model with
+the full-precision noise estimation network, pθ(xt−1|xt) in
+Eq. 5 to generate a xti. Finally, we get the calibration set,
+C = {xti}N
+i=1. Calibration samples can thus cover a wide
+range of time steps. We testify the effectiveness of this col-
+lection method, and present the results in Tab. 3. The result
+validates our hypothesis that calibration samples should re-
+flect the time-step discrepancy.
+3.3.2
+Normally Distributed Time-step Calibration
+Based on the above-demonstrated calibration baselines and
+observations, we desire the calibration samples: (1) gen-
+erated by the denoising process (from noise xT ) with the
+full-precision diffusion model; (2) relatively close to x0, far
+away from xT ; (3) covered by various time-steps. Note that
+(2) and (3) are a pair of trade-off conditions, which can not
+be satisfied simultaneously.
+Considering all the conditions, we propose a DM-
+specific calibration set collection method,
+termed as
+Figure 5. A general illustration of sampling time-steps following a
+distribution over the range of the denoising time-step.
+Algorithm 1 Normally Distributed Time-step Calibration
+Collection (DNTC) Algorithm.
+Input: The size of calibration set N, and a mean of the
+Normal distribution µ, and the full-precision noise esti-
+mation network pθ(xt−1|xt) in Eq. 5.
+Output: Obtain a Calibration Set C.
+1: Collecting Calibration Set:
+2: for i = 1 to N do
 3:
-Send xt ∼ q(xt|xt+1, x0) using pθ(xt|xt+1)
-4: end for
-5: Send x0 using pθ(x0|x1)
-Algorithm 4 Receiving
-1: Receive xT using p(xT )
-2: for t = T − 1, . . . , 1, 0 do
-3:
-Receive xt using pθ(xt|xt+1)
-4: end for
-5: return x0
-We ﬁnd that training our models on the true variational bound yields better codelengths than training
-on the simpliﬁed objective, as expected, but the latter yields the best sample quality. See Fig. 1 for
-CIFAR10 and CelebA-HQ 256 × 256 samples, Fig. 3 and Fig. 4 for LSUN 256 × 256 samples [71],
-and Appendix D for more.
-###
-4.2 Reverse process parameterization and training objective ablation
-In Table 2, we show the sample quality effects of reverse process parameterizations and training
-objectives (Section 3.2). We ﬁnd that the baseline option of predicting ˜µ works well only when
-trained on the true variational bound instead of unweighted mean squared error, a simpliﬁed objective
-akin to Eq. (14). We also see that learning reverse process variances (by incorporating a parameterized
-diagonal Σθ(xt) into the variational bound) leads to unstable training and poorer sample quality
-compared to ﬁxed variances. Predicting ϵ, as we proposed, performs approximately as well as
-predicting ˜µ when trained on the variational bound with ﬁxed variances, but much better when trained
-with our simpliﬁed objective.
-###
-4.3 Progressive coding
-Table 1 also shows the codelengths of our CIFAR10 models. The gap between train and test is at
-most 0.03 bits per dimension, which is comparable to the gaps reported with other likelihood-based
-models and indicates that our diffusion model is not overﬁtting (see Appendix D for nearest neighbor
-visualizations). Still, while our lossless codelengths are better than the large estimates reported for
-energy based models and score matching using annealed importance sampling [11], they are not
-competitive with other types of likelihood-based generative models [7].
-Since our samples are nonetheless of high quality, we conclude that diffusion models have an inductive
-bias that makes them excellent lossy compressors. Treating the variational bound terms L1 +· · ·+LT
-as rate and L0 as distortion, our CIFAR10 model with the highest quality samples has a rate of 1.78
-bits/dim and a distortion of 1.97 bits/dim, which amounts to a root mean squared error of 0.95 on a
-scale from 0 to 255. More than half of the lossless codelength describes imperceptible distortions.
-Progressive lossy compression
-We can probe further into the rate-distortion behavior of our model
-by introducing a progressive lossy code that mirrors the form of Eq. (5): see Algorithms 3 and 4,
-which assume access to a procedure, such as minimal random coding [19, 20], that can transmit a
-sample x ∼ q(x) using approximately DKL(q(x) ∥ p(x)) bits on average for any distributions p and
-q, for which only p is available to the receiver beforehand. When applied to x0 ∼ q(x0), Algorithms 3
-and 4 transmit xT , . . . , x0 in sequence using a total expected codelength equal to Eq. (5). The receiver,
-6
-at any time t, has the partial information xt fully available and can progressively estimate:
-x0 ≈ ˆx0 =
- xt −
-√
-1 − ¯αtϵθ(xt)
-
-/√¯αt
+Sample ti from distribution N(µ, T
+2 ) in Eq. 15;
+4:
+Round down ti into a integer, i.e., ti = ⌊ti⌋;
+5:
+Clamp ti between [0, T], i.e., ti = Clamp(0, T, ti);
+6:
+Produce sample on ti time-step:
+7:
+for t = T to ti do
+8:
+Generate a Gaussian Noise xT as initialization;
+9:
+Sample xt−1 using pθ(xt−1|xt);
+10:
+end for
+11:
+Output sample xti;
+12: end for
+13: Output a calibration set C = {xti}N
+i=1.
+Normally Distributed Time-step Calibration (NDTC). In
+this method, the calibration set {xti} are generated by the
+denoising process (for condition 1), where time-step ti are
+sampled from a skew Normal distribution (for balancing
+conditions 2 & 3). Specifically, we first generate a set of
+sampled {ti} following skew normal distribution over the
+time-step range (satisfying condition 3), i.e.,
+ti ∼ N(µ, T
+2 ) (i = 1, 2, · · · , N),
 (15)
-due to Eq. (4). (A stochastic reconstruction x0 ∼ pθ(x0|xt) is also valid, but we do not consider
-it here because it makes distortion more difﬁcult to evaluate.) Figure 5 shows the resulting rate-
-distortion plot on the CIFAR10 test set. At each time t, the distortion is calculated as the root mean
-squared error
-p
-∥x0 − ˆx0∥2/D, and the rate is calculated as the cumulative number of bits received
-so far at time t. The distortion decreases steeply in the low-rate region of the rate-distortion plot,
-indicating that the majority of the bits are indeed allocated to imperceptible distortions.
-0
-200
-400
-600
-800 1,000
-0
-20
-40
-60
-80
-Reverse process steps (T − t)
-Distortion (RMSE)
-0
-200
-400
-600
-800 1,000
-0
-0.5
-1
-1.5
-Reverse process steps (T − t)
-Rate (bits/dim)
-0
-0.5
-1
-1.5
-0
-20
-40
-60
-80
-Rate (bits/dim)
-Distortion (RMSE)
-Figure 5: Unconditional CIFAR10 test set rate-distortion vs. time. Distortion is measured in root mean squared
-error on a [0, 255] scale. See Table 4 for details.
-Progressive generation
-We also run a progressive unconditional generation process given by
-progressive decompression from random bits. In other words, we predict the result of the reverse
-process, ˆx0, while sampling from the reverse process using Algorithm 2. Figures 6 and 10 show the
-resulting sample quality of ˆx0 over the course of the reverse process. Large scale image features
-appear ﬁrst and details appear last. Figure 7 shows stochastic predictions x0 ∼ pθ(x0|xt) with xt
-frozen for various t. When t is small, all but ﬁne details are preserved, and when t is large, only large
-scale features are preserved. Perhaps these are hints of conceptual compression [18].
-Figure 6: Unconditional CIFAR10 progressive generation (ˆx0 over time, from left to right). Extended samples
-and sample quality metrics over time in the appendix (Figs. 10 and 14).
-Figure 7: When conditioned on the same latent, CelebA-HQ 256 × 256 samples share high-level attributes.
-Bottom-right quadrants are xt, and other quadrants are samples from pθ(x0|xt).
-Connection to autoregressive decoding
-Note that the variational bound (5) can be rewritten as:
-L = DKL(q(xT ) ∥ p(xT )) + Eq
-" X
-t≥1
-DKL(q(xt−1|xt) ∥ pθ(xt−1|xt))
-#
-+ H(x0)
-(16)
-(See Appendix A for a derivation.) Now consider setting the diffusion process length T to the
-dimensionality of the data, deﬁning the forward process so that q(xt|x0) places all probability mass
-on x0 with the ﬁrst t coordinates masked out (i.e. q(xt|xt−1) masks out the tth coordinate), setting
-p(xT ) to place all mass on a blank image, and, for the sake of argument, taking pθ(xt−1|xt) to
-7
-Figure 8: Interpolations of CelebA-HQ 256x256 images with 500 timesteps of diffusion.
-be a fully expressive conditional distribution. With these choices, DKL(q(xT ) ∥ p(xT )) = 0, and
-minimizing DKL(q(xt−1|xt) ∥ pθ(xt−1|xt)) trains pθ to copy coordinates t + 1, . . . , T unchanged
-and to predict the tth coordinate given t + 1, . . . , T. Thus, training pθ with this particular diffusion is
-training an autoregressive model.
-We can therefore interpret the Gaussian diffusion model (2) as a kind of autoregressive model with
-a generalized bit ordering that cannot be expressed by reordering data coordinates. Prior work has
-shown that such reorderings introduce inductive biases that have an impact on sample quality [38],
-so we speculate that the Gaussian diffusion serves a similar purpose, perhaps to greater effect since
-Gaussian noise might be more natural to add to images compared to masking noise. Moreover, the
-Gaussian diffusion length is not restricted to equal the data dimension; for instance, we use T = 1000,
-which is less than the dimension of the 32 × 32 × 3 or 256 × 256 × 3 images in our experiments.
-Gaussian diffusions can be made shorter for fast sampling or longer for model expressiveness.
+where N(µ, T
+2 ) is a normal distribution with mean µ ≤ T
+2
+and standard deviation
+q
+T
+2 , N is the size of calibration
+set, and T is the number of time-steps in denoising pro-
+cess. As µ is less than or equal to the median of time-step,
+T
+2 (satisfying condition 2). Then given a Gaussian noise
+xT ∼ N(0, I) and ti, we utilize the diffusion model with
+the full-precision noise estimation network, pθ(xt−1|xt) in
+Eq. 5 to generate a xti (satisfying condition 1). The above-
+mentioned process of sampling time-steps is presented in
+
+Table 4. Exploration on calibration metric for 8-bit quantization.
+We set p=2.4 for MSE metrics.
+IS ↑
+FID ↓
+sFID ↓
+L1 distance
+7.38
+100.52
+63.01
+Cosine distance
+12.85
+34.81
+23.75
+KL divergence
+11.74
+47.27
+45.08
+MSE
+13.76
+30.46
+19.42
+Figure 6. Non-cherry-picked generated samples. (Upper) Sam-
+ples synthesized by full precision DDPM [11]. (Bottom) Samples
+synthesized by 8-bit model quantized by our method. Note that
+PTQ4DM can directly output an 8-bit diffusion with the pre-trained
+32-bit diffusion model as input in a training-free manner.
+Fig. 5. Finally, we get the calibration set, C = {xti}N
+i=1.
+The detailed collection algorithm is presented in Alg. 1.
+The effectiveness of NDTC is assessed by comparing it
+to the mentioned PTQ baselines and full-precision DMs.
+The results are presented in Tab. 3 and Fig. 6.
 ###
-4.4 Interpolation
-We can interpolate source images x0, x′
-0 ∼ q(x0) in latent space using q as a stochastic encoder,
-xt, x′
-t ∼ q(xt|x0), then decoding the linearly interpolated latent ¯xt = (1 − λ)x0 + λx′
-0 into image
-space by the reverse process, ¯x0 ∼ p(x0|¯xt). In effect, we use the reverse process to remove
-artifacts from linearly interpolating corrupted versions of the source images, as depicted in Fig. 8
-(left). We ﬁxed the noise for different values of λ so xt and x′
-t remain the same. Fig. 8 (right)
-shows interpolations and reconstructions of original CelebA-HQ 256 × 256 images (t = 500). The
-reverse process produces high-quality reconstructions, and plausible interpolations that smoothly
-vary attributes such as pose, skin tone, hairstyle, expression and background, but not eyewear. Larger
-t results in coarser and more varied interpolations, with novel samples at t = 1000 (Appendix Fig. 9).
+3.4. Exploration on Parameter Calibration
+When the calibration samples are collected, the third step
+is selecting quantization parameters for tensors in the diffu-
+sion model. In this section, we explore the metric to cali-
+brate the tensors. As shown in Table 4, the MSE is better
+than the L1 distance, cosine distance, and KL divergence.
+Therefore, we take MSE as the metric for quantizing the
+diffusion model.
 ###
-5 Related Work
-While diffusion models might resemble ﬂows [9, 46, 10, 32, 5, 16, 23] and VAEs [33, 47, 37],
-diffusion models are designed so that q has no parameters and the top-level latent xT has nearly zero
-mutual information with the data x0. Our ϵ-prediction reverse process parameterization establishes a
-connection between diffusion models and denoising score matching over multiple noise levels with
-annealed Langevin dynamics for sampling [55, 56]. Diffusion models, however, admit straightforward
-log likelihood evaluation, and the training procedure explicitly trains the Langevin dynamics sampler
-using variational inference (see Appendix C for details). The connection also has the reverse
-implication that a certain weighted form of denoising score matching is the same as variational
-inference to train a Langevin-like sampler. Other methods for learning transition operators of Markov
-chains include infusion training [2], variational walkback [15], generative stochastic networks [1],
-and others [50, 54, 36, 42, 35, 65].
-By the known connection between score matching and energy-based modeling, our work could have
-implications for other recent work on energy-based models [67–69, 12, 70, 13, 11, 41, 17, 8]. Our
-rate-distortion curves are computed over time in one evaluation of the variational bound, reminiscent
-of how rate-distortion curves can be computed over distortion penalties in one run of annealed
-importance sampling [24]. Our progressive decoding argument can be seen in convolutional DRAW
-and related models [18, 40] and may also lead to more general designs for subscale orderings or
-sampling strategies for autoregressive models [38, 64].
-8
+4. More Experiments
+We select the diffusion models that generating CI-
+FAR10 [16] 32×32 images or ImageNet [7] down-sampled
+64×64 images. We experiment on both DDPM (4000 steps)
+and DDIM (100 and 250 steps) to generate the images.
+We use the proposed method in Section 3.3 to generate
+1024 calibration samples. And we quantize the network to
+8-bit. Then we sample 10,000 images for evaluation. The
+results are listed in Table 5. Note that the number of samples
+that we generate is only 10,000 (50,000 in several papers)
+in order to efficiently compare our methods with other base-
+lines quantitatively. Thus some reported results in this paper
+are slightly different from the results in the original papers.
+There is an exciting result in these experiments. In the set-
+ting of using DDPM [11] to generate images with the size
+of 32 × 32, the 8-bit DDPM quantized by our method out-
+performs the full-precision DDPM. As discussed in Sec. 1,
+there are two factors slowing down the denoising process:
+i) lengthy iterations for sampling images from noise, and
+ii) a cumbersome network for estimating noise in each it-
+eration. The successes of previous DM acceleration meth-
+ods [4, 29, 24, 40, 2, 18] validate the existence of model
+redundancy from the perspective of iteration length. With
+this exciting result, we uncover the redundancy from a pre-
+viously unknown perspective, in which the noise estimation
+network is also redundant.
+Table 5. Experiment on 8-bit quantized diffusion models generat-
+ing CIFAR10 image or ImageNet image.
+Task
+Method
+IS ↑
+FID ↓
+sFID ↓
+ImageNet 64x64
+FP
+15.38
+21.70
+17.93
+DDIM 100 steps
+PTQ4DM
+15.52
+24.92
+17.36
+ImageNet 64x64
+FP
+14.88
+21.63
+17.66
+DDIM 250 steps
+PTQ4DM
+15.88
+23.96
+17.67
+ImageNet 64x64
+FP
+15.93
+20.82
+17.42
+DDPM 4000 steps
+PTQ4DM
+15.28
+23.64
+17.29
+CIFAR 32x32
+FP
+9.18
+10.05
+19.71
+DDIM 100 steps
+PTQ4DM
+9.31
+14.18
+22.59
+CIFAR 32x32
+FP
+9.19
+8.91
+18.43
+DDIM 250 steps
+PTQ4DM
+9.70
+11.66
+19.71
+CIFAR 32x32
+FP
+9.28
+7.14
+17.09
+DDPM 4000 steps
+PTQ4DM
+9.55
+7.10
+17.02
 ###
-6 Conclusion
-We have presented high quality image samples using diffusion models, and we have found connections
-among diffusion models and variational inference for training Markov chains, denoising score
-matching and annealed Langevin dynamics (and energy-based models by extension), autoregressive
-models, and progressive lossy compression. Since diffusion models seem to have excellent inductive
-biases for image data, we look forward to investigating their utility in other data modalities and as
-components in other types of generative models and machine learning systems.
-Broader Impact
-Our work on diffusion models takes on a similar scope as existing work on other types of deep
-generative models, such as efforts to improve the sample quality of GANs, ﬂows, autoregressive
-models, and so forth. Our paper represents progress in making diffusion models a generally useful
-tool in this family of techniques, so it may serve to amplify any impacts that generative models have
-had (and will have) on the broader world.
-Unfortunately, there are numerous well-known malicious uses of generative models. Sample gen-
-eration techniques can be employed to produce fake images and videos of high proﬁle ﬁgures for
-political purposes. While fake images were manually created long before software tools were avail-
-able, generative models such as ours make the process easier. Fortunately, CNN-generated images
-currently have subtle ﬂaws that allow detection [62], but improvements in generative models may
-make this more difﬁcult. Generative models also reﬂect the biases in the datasets on which they
-are trained. As many large datasets are collected from the internet by automated systems, it can be
-difﬁcult to remove these biases, especially when the images are unlabeled. If samples from generative
-models trained on these datasets proliferate throughout the internet, then these biases will only be
-reinforced further.
-On the other hand, diffusion models may be useful for data compression, which, as data becomes
-higher resolution and as global internet trafﬁc increases, might be crucial to ensure accessibility of
-the internet to wide audiences. Our work might contribute to representation learning on unlabeled
-raw data for a large range of downstream tasks, from image classiﬁcation to reinforcement learning,
-and diffusion models might also become viable for creative uses in art, photography, and music.
-Acknowledgments and Disclosure of Funding
-This work was supported by ONR PECASE and the NSF Graduate Research Fellowship under grant
-number DGE-1752814. Google’s TensorFlow Research Cloud (TFRC) provided Cloud TPUs.
+5. Conclusion
+Two orthogonal factors slow down the denoising pro-
+cess: i) lengthy iterations for sampling images from noise,
+and ii) a cumbersome network for estimating noise in
+each iteration. Different from mainstream DM acceleration
+works focusing on the former, our work digs into the lat-
+ter. In this paper, we propose Post-Training Quantization
+for Diffusion Models (PTQ4DM), in which a pre-trained dif-
+fusion model can be directly quantized into 8 bits without
+experiencing a significant degradation in performance. Im-
+portantly, our method can be added to other fast-sampling
+methods, such as DDIM [24].
+
 References
-[1] Guillaume Alain, Yoshua Bengio, Li Yao, Jason Yosinski, Eric Thibodeau-Laufer, Saizheng Zhang, and
-Pascal Vincent. GSNs: generative stochastic networks. Information and Inference: A Journal of the IMA,
-5(2):210–249, 2016.
-[2] Florian Bordes, Sina Honari, and Pascal Vincent. Learning to generate samples from noise through infusion
-training. In International Conference on Learning Representations, 2017.
-[3] Andrew Brock, Jeff Donahue, and Karen Simonyan. Large scale GAN training for high ﬁdelity natural
-image synthesis. In International Conference on Learning Representations, 2019.
-[4] Tong Che, Ruixiang Zhang, Jascha Sohl-Dickstein, Hugo Larochelle, Liam Paull, Yuan Cao, and Yoshua
-Bengio. Your GAN is secretly an energy-based model and you should use discriminator driven latent
-sampling. arXiv preprint arXiv:2003.06060, 2020.
-[5] Tian Qi Chen, Yulia Rubanova, Jesse Bettencourt, and David K Duvenaud. Neural ordinary differential
-equations. In Advances in Neural Information Processing Systems, pages 6571–6583, 2018.
-[6] Xi Chen, Nikhil Mishra, Mostafa Rohaninejad, and Pieter Abbeel. PixelSNAIL: An improved autoregres-
-sive generative model. In International Conference on Machine Learning, pages 863–871, 2018.
-[7] Rewon Child, Scott Gray, Alec Radford, and Ilya Sutskever. Generating long sequences with sparse
-transformers. arXiv preprint arXiv:1904.10509, 2019.
-9
-[8] Yuntian Deng, Anton Bakhtin, Myle Ott, Arthur Szlam, and Marc’Aurelio Ranzato. Residual energy-based
-models for text generation. arXiv preprint arXiv:2004.11714, 2020.
-[9] Laurent Dinh, David Krueger, and Yoshua Bengio. NICE: Non-linear independent components estimation.
-arXiv preprint arXiv:1410.8516, 2014.
-[10] Laurent Dinh, Jascha Sohl-Dickstein, and Samy Bengio. Density estimation using Real NVP. arXiv
-preprint arXiv:1605.08803, 2016.
-[11] Yilun Du and Igor Mordatch. Implicit generation and modeling with energy based models. In Advances in
-Neural Information Processing Systems, pages 3603–3613, 2019.
-[12] Ruiqi Gao, Yang Lu, Junpei Zhou, Song-Chun Zhu, and Ying Nian Wu. Learning generative ConvNets
-via multi-grid modeling and sampling. In Proceedings of the IEEE Conference on Computer Vision and
-Pattern Recognition, pages 9155–9164, 2018.
-[13] Ruiqi Gao, Erik Nijkamp, Diederik P Kingma, Zhen Xu, Andrew M Dai, and Ying Nian Wu. Flow
-contrastive estimation of energy-based models. In Proceedings of the IEEE/CVF Conference on Computer
-Vision and Pattern Recognition, pages 7518–7528, 2020.
-[14] Ian Goodfellow, Jean Pouget-Abadie, Mehdi Mirza, Bing Xu, David Warde-Farley, Sherjil Ozair, Aaron
-Courville, and Yoshua Bengio. Generative adversarial nets. In Advances in Neural Information Processing
-Systems, pages 2672–2680, 2014.
-[15] Anirudh Goyal, Nan Rosemary Ke, Surya Ganguli, and Yoshua Bengio. Variational walkback: Learning a
-transition operator as a stochastic recurrent net. In Advances in Neural Information Processing Systems,
-pages 4392–4402, 2017.
-[16] Will Grathwohl, Ricky T. Q. Chen, Jesse Bettencourt, and David Duvenaud.
-FFJORD: Free-form
-continuous dynamics for scalable reversible generative models. In International Conference on Learning
-Representations, 2019.
-[17] Will Grathwohl, Kuan-Chieh Wang, Joern-Henrik Jacobsen, David Duvenaud, Mohammad Norouzi, and
-Kevin Swersky. Your classiﬁer is secretly an energy based model and you should treat it like one. In
-International Conference on Learning Representations, 2020.
-[18] Karol Gregor, Frederic Besse, Danilo Jimenez Rezende, Ivo Danihelka, and Daan Wierstra. Towards
-conceptual compression. In Advances In Neural Information Processing Systems, pages 3549–3557, 2016.
-[19] Prahladh Harsha, Rahul Jain, David McAllester, and Jaikumar Radhakrishnan. The communication
-complexity of correlation. In Twenty-Second Annual IEEE Conference on Computational Complexity
-(CCC’07), pages 10–23. IEEE, 2007.
-[20] Marton Havasi, Robert Peharz, and José Miguel Hernández-Lobato. Minimal random code learning:
-Getting bits back from compressed model parameters. In International Conference on Learning Represen-
-tations, 2019.
-[21] Martin Heusel, Hubert Ramsauer, Thomas Unterthiner, Bernhard Nessler, and Sepp Hochreiter. GANs
-trained by a two time-scale update rule converge to a local Nash equilibrium. In Advances in Neural
-Information Processing Systems, pages 6626–6637, 2017.
-[22] Irina Higgins, Loic Matthey, Arka Pal, Christopher Burgess, Xavier Glorot, Matthew Botvinick, Shakir Mo-
-hamed, and Alexander Lerchner. beta-VAE: Learning basic visual concepts with a constrained variational
-framework. In International Conference on Learning Representations, 2017.
-[23] Jonathan Ho, Xi Chen, Aravind Srinivas, Yan Duan, and Pieter Abbeel. Flow++: Improving ﬂow-based
-generative models with variational dequantization and architecture design. In International Conference on
-Machine Learning, 2019.
-[24] Sicong Huang, Alireza Makhzani, Yanshuai Cao, and Roger Grosse. Evaluating lossy compression rates of
-deep generative models. In International Conference on Machine Learning, 2020.
-[25] Nal Kalchbrenner, Aaron van den Oord, Karen Simonyan, Ivo Danihelka, Oriol Vinyals, Alex Graves, and
-Koray Kavukcuoglu. Video pixel networks. In International Conference on Machine Learning, pages
-1771–1779, 2017.
-[26] Nal Kalchbrenner, Erich Elsen, Karen Simonyan, Seb Noury, Norman Casagrande, Edward Lockhart,
-Florian Stimberg, Aaron van den Oord, Sander Dieleman, and Koray Kavukcuoglu. Efﬁcient neural audio
-synthesis. In International Conference on Machine Learning, pages 2410–2419, 2018.
-[27] Tero Karras, Timo Aila, Samuli Laine, and Jaakko Lehtinen. Progressive growing of GANs for improved
-quality, stability, and variation. In International Conference on Learning Representations, 2018.
-[28] Tero Karras, Samuli Laine, and Timo Aila. A style-based generator architecture for generative adversarial
-networks. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, pages
-1
-4401–4410, 2019.
-[29] Tero Karras, Miika Aittala, Janne Hellsten, Samuli Laine, Jaakko Lehtinen, and Timo Aila. Training
-generative adversarial networks with limited data. arXiv preprint arXiv:2006.06676v1, 2020.
-[30] Tero Karras, Samuli Laine, Miika Aittala, Janne Hellsten, Jaakko Lehtinen, and Timo Aila. Analyzing and
-improving the image quality of StyleGAN. In Proceedings of the IEEE/CVF Conference on Computer
-Vision and Pattern Recognition, pages 8110–8119, 2020.
-[31] Diederik P Kingma and Jimmy Ba. Adam: A method for stochastic optimization. In International
-Conference on Learning Representations, 2015.
-[32] Diederik P Kingma and Prafulla Dhariwal. Glow: Generative ﬂow with invertible 1x1 convolutions. In
-Advances in Neural Information Processing Systems, pages 10215–10224, 2018.
-[33] Diederik P Kingma and Max Welling. Auto-encoding variational Bayes. arXiv preprint arXiv:1312.6114,
-2013.
-[34] Diederik P Kingma, Tim Salimans, Rafal Jozefowicz, Xi Chen, Ilya Sutskever, and Max Welling. Improved
-variational inference with inverse autoregressive ﬂow. In Advances in Neural Information Processing
-Systems, pages 4743–4751, 2016.
-[35] John Lawson, George Tucker, Bo Dai, and Rajesh Ranganath. Energy-inspired models: Learning with
-sampler-induced distributions. In Advances in Neural Information Processing Systems, pages 8501–8513,
-2019.
-[36] Daniel Levy, Matt D. Hoffman, and Jascha Sohl-Dickstein. Generalizing Hamiltonian Monte Carlo with
-neural networks. In International Conference on Learning Representations, 2018.
-[37] Lars Maaløe, Marco Fraccaro, Valentin Liévin, and Ole Winther. BIVA: A very deep hierarchy of
-latent variables for generative modeling. In Advances in Neural Information Processing Systems, pages
-6548–6558, 2019.
-[38] Jacob Menick and Nal Kalchbrenner. Generating high ﬁdelity images with subscale pixel networks and
-multidimensional upscaling. In International Conference on Learning Representations, 2019.
-[39] Takeru Miyato, Toshiki Kataoka, Masanori Koyama, and Yuichi Yoshida. Spectral normalization for
-generative adversarial networks. In International Conference on Learning Representations, 2018.
-[40] Alex Nichol. VQ-DRAW: A sequential discrete VAE. arXiv preprint arXiv:2003.01599, 2020.
-[41] Erik Nijkamp, Mitch Hill, Tian Han, Song-Chun Zhu, and Ying Nian Wu. On the anatomy of MCMC-based
-maximum likelihood learning of energy-based models. arXiv preprint arXiv:1903.12370, 2019.
-[42] Erik Nijkamp, Mitch Hill, Song-Chun Zhu, and Ying Nian Wu. Learning non-convergent non-persistent
-short-run MCMC toward energy-based model. In Advances in Neural Information Processing Systems,
-pages 5233–5243, 2019.
-[43] Georg Ostrovski, Will Dabney, and Remi Munos. Autoregressive quantile networks for generative modeling.
-In International Conference on Machine Learning, pages 3936–3945, 2018.
-[44] Ryan Prenger, Rafael Valle, and Bryan Catanzaro. WaveGlow: A ﬂow-based generative network for
-speech synthesis. In ICASSP 2019-2019 IEEE International Conference on Acoustics, Speech and Signal
-Processing (ICASSP), pages 3617–3621. IEEE, 2019.
-[45] Ali Razavi, Aaron van den Oord, and Oriol Vinyals. Generating diverse high-ﬁdelity images with VQ-
-VAE-2. In Advances in Neural Information Processing Systems, pages 14837–14847, 2019.
-[46] Danilo Rezende and Shakir Mohamed. Variational inference with normalizing ﬂows. In International
-Conference on Machine Learning, pages 1530–1538, 2015.
-[47] Danilo Jimenez Rezende, Shakir Mohamed, and Daan Wierstra. Stochastic backpropagation and approx-
-imate inference in deep generative models. In International Conference on Machine Learning, pages
-1278–1286, 2014.
-[48] Olaf Ronneberger, Philipp Fischer, and Thomas Brox. U-Net: Convolutional networks for biomedical
-image segmentation. In International Conference on Medical Image Computing and Computer-Assisted
-Intervention, pages 234–241. Springer, 2015.
-[49] Tim Salimans and Durk P Kingma. Weight normalization: A simple reparameterization to accelerate
-training of deep neural networks. In Advances in Neural Information Processing Systems, pages 901–909,
-2016.
-[50] Tim Salimans, Diederik Kingma, and Max Welling. Markov Chain Monte Carlo and variational inference:
-Bridging the gap. In International Conference on Machine Learning, pages 1218–1226, 2015.
-1
-[51] Tim Salimans, Ian Goodfellow, Wojciech Zaremba, Vicki Cheung, Alec Radford, and Xi Chen. Improved
-techniques for training gans. In Advances in Neural Information Processing Systems, pages 2234–2242,
-2016.
-[52] Tim Salimans, Andrej Karpathy, Xi Chen, and Diederik P Kingma. PixelCNN++: Improving the PixelCNN
-with discretized logistic mixture likelihood and other modiﬁcations. In International Conference on
-Learning Representations, 2017.
-[53] Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep unsupervised
-learning using nonequilibrium thermodynamics. In International Conference on Machine Learning, pages
-2256–2265, 2015.
-[54] Jiaming Song, Shengjia Zhao, and Stefano Ermon. A-NICE-MC: Adversarial training for MCMC. In
-Advances in Neural Information Processing Systems, pages 5140–5150, 2017.
-[55] Yang Song and Stefano Ermon. Generative modeling by estimating gradients of the data distribution. In
-Advances in Neural Information Processing Systems, pages 11895–11907, 2019.
-[56] Yang Song and Stefano Ermon. Improved techniques for training score-based generative models. arXiv
-preprint arXiv:2006.09011, 2020.
-[57] Aaron van den Oord, Sander Dieleman, Heiga Zen, Karen Simonyan, Oriol Vinyals, Alex Graves, Nal
-Kalchbrenner, Andrew Senior, and Koray Kavukcuoglu. WaveNet: A generative model for raw audio.
-arXiv preprint arXiv:1609.03499, 2016.
-[58] Aaron van den Oord, Nal Kalchbrenner, and Koray Kavukcuoglu. Pixel recurrent neural networks.
-International Conference on Machine Learning, 2016.
-[59] Aaron van den Oord, Nal Kalchbrenner, Oriol Vinyals, Lasse Espeholt, Alex Graves, and Koray
-Kavukcuoglu. Conditional image generation with PixelCNN decoders. In Advances in Neural Information
-Processing Systems, pages 4790–4798, 2016.
-[60] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz
-Kaiser, and Illia Polosukhin. Attention is all you need. In Advances in Neural Information Processing
-Systems, pages 5998–6008, 2017.
-[61] Pascal Vincent. A connection between score matching and denoising autoencoders. Neural Computation,
-23(7):1661–1674, 2011.
-[62] Sheng-Yu Wang, Oliver Wang, Richard Zhang, Andrew Owens, and Alexei A Efros. Cnn-generated images
-are surprisingly easy to spot...for now. In Proceedings of the IEEE Conference on Computer Vision and
-Pattern Recognition, 2020.
-[63] Xiaolong Wang, Ross Girshick, Abhinav Gupta, and Kaiming He. Non-local neural networks. In
-Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, pages 7794–7803,
-2018.
-[64] Auke J Wiggers and Emiel Hoogeboom. Predictive sampling with forecasting autoregressive models.
-arXiv preprint arXiv:2002.09928, 2020.
-[65] Hao Wu, Jonas Köhler, and Frank Noé. Stochastic normalizing ﬂows. arXiv preprint arXiv:2002.06707,
+[1] Ron Banner, Yury Nahshan, and Daniel Soudry. Post train-
+ing 4-bit quantization of convolutional networks for rapid-
+deployment. In NeurIPS, 2019.
+[2] Fan Bao, Chongxuan Li, Jun Zhu, and Bo Zhang. Analytic-
+dpm: an analytic estimate of the optimal reverse variance in
+diffusion probabilistic models. In ICLR, 2022.
+[3] Yaohui Cai, Zhewei Yao, Zhen Dong, Amir Gholami,
+Michael W. Mahoney, and Kurt Keutzer. Zeroq: A novel
+zero shot quantization framework. In CVPR, 2020.
+[4] Nanxin Chen, Yu Zhang, Heiga Zen, Ron J Weiss, Mo-
+hammad Norouzi, and William Chan.
+Wavegrad: Esti-
+mating gradients for waveform generation. arXiv preprint
+arXiv:2009.00713, 2020.
+[5] Yoni Choukroun, Eli Kravchik, Fan Yang, and Pavel Kisilev.
+Low-bit quantization of neural networks for efficient infer-
+ence. In ICCV Workshops, 2019.
+[6] Florinel-Alin Croitoru, Vlad Hondru, Radu Tudor Ionescu,
+and Mubarak Shah. Diffusion models in vision: A survey.
+arXiv preprint arXiv:2209.04747, 2022.
+[7] Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li,
+and Li Fei-Fei. Imagenet: A large-scale hierarchical image
+database. In CVPR, 2009.
+[8] Steven K. Esser, Jeffrey L. McKinstry, Deepika Bablani,
+Rathinakumar Appuswamy, and Dharmendra S. Modha.
+Learned step size quantization. In ICLR, 2020.
+[9] Ian Goodfellow, Jean Pouget-Abadie, Mehdi Mirza, Bing
+Xu, David Warde-Farley, Sherjil Ozair, Aaron Courville, and
+Yoshua Bengio. Generative adversarial networks. Commu-
+nications of the ACM, 2020.
+[10] Xiangyu He, Jiahao Lu, Weixiang Xu, Qinghao Hu, Peisong
+Wang, and Jian Cheng. Generative zero-shot network quan-
+tization. In CVPR, 2021.
+[11] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffu-
+sion probabilistic models. In NeurIPS, 2020.
+[12] Itay Hubara, Yury Nahshan, Yair Hanani, Ron Banner, and
+Daniel Soudry. Improving post training neural quantization:
+Layer-wise calibration and integer programming.
+CoRR,
 2020.
-[66] Yuxin Wu and Kaiming He. Group normalization. In Proceedings of the European Conference on Computer
-Vision (ECCV), pages 3–19, 2018.
-[67] Jianwen Xie, Yang Lu, Song-Chun Zhu, and Yingnian Wu. A theory of generative convnet. In International
-Conference on Machine Learning, pages 2635–2644, 2016.
-[68] Jianwen Xie, Song-Chun Zhu, and Ying Nian Wu. Synthesizing dynamic patterns by spatial-temporal
-generative convnet. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition,
-pages 7093–7101, 2017.
-[69] Jianwen Xie, Zilong Zheng, Ruiqi Gao, Wenguan Wang, Song-Chun Zhu, and Ying Nian Wu. Learning
-descriptor networks for 3d shape synthesis and analysis. In Proceedings of the IEEE Conference on
-Computer Vision and Pattern Recognition, pages 8629–8638, 2018.
-[70] Jianwen Xie, Song-Chun Zhu, and Ying Nian Wu. Learning energy-based spatial-temporal generative
-convnets for dynamic patterns. IEEE Transactions on Pattern Analysis and Machine Intelligence, 2019.
-[71] Fisher Yu, Yinda Zhang, Shuran Song, Ari Seff, and Jianxiong Xiao. LSUN: Construction of a large-scale
-image dataset using deep learning with humans in the loop. arXiv preprint arXiv:1506.03365, 2015.
-[72] Sergey Zagoruyko and Nikos Komodakis. Wide residual networks. arXiv preprint arXiv:1605.07146,
-2016.
-1
-Extra information
-LSUN
-FID scores for LSUN datasets are included in Table 3. Scores marked with ∗ are reported
-by StyleGAN2 as baselines, and other scores are reported by their respective authors.
-Table 3: FID scores for LSUN 256 × 256 datasets
-Model
-LSUN Bedroom
-LSUN Church
-LSUN Cat
-ProgressiveGAN [27]
-8.34
-6.42
-37.52
-StyleGAN [28]
-2.65
-4.21∗
-8.53∗
-StyleGAN2 [30]
--
-3.86
-6.93
-Ours (Lsimple)
-6.36
-7.89
-19.75
-Ours (Lsimple, large)
-4.90
--
--
-Progressive compression
-Our lossy compression argument in Section 4.3 is only a proof of concept,
-because Algorithms 3 and 4 depend on a procedure such as minimal random coding [20], which is
-not tractable for high dimensional data. These algorithms serve as a compression interpretation of the
-variational bound (5) of Sohl-Dickstein et al. [53], not yet as a practical compression system.
-Table 4: Unconditional CIFAR10 test set rate-distortion values (accompanies Fig. 5)
-Reverse process time (T − t + 1)
-Rate (bits/dim)
-Distortion (RMSE [0, 255])
-1000
-1.77581
-0.95136
-900
-0.11994
-12.02277
-800
-0.05415
-18.47482
-700
-0.02866
-24.43656
-600
-0.01507
-30.80948
-500
-0.00716
-38.03236
-400
-0.00282
-46.12765
-300
-0.00081
-54.18826
-200
-0.00013
-60.97170
-100
-0.00000
-67.60125
-A
-Extended derivations
-Below is a derivation of Eq. (5), the reduced variance variational bound for diffusion models. This
-material is from Sohl-Dickstein et al. [53]; we include it here only for completeness.
-L = Eq
-
-− log pθ(x0:T )
-q(x1:T |x0)
-
-(17)
-= Eq
-
-− log p(xT ) −
-X
-t≥1
-log pθ(xt−1|xt)
-q(xt|xt−1)
-
-
-(18)
-= Eq
-"
-− log p(xT ) −
-X
-t>1
-log pθ(xt−1|xt)
-q(xt|xt−1) − log pθ(x0|x1)
-q(x1|x0)
-#
-(19)
-= Eq
-"
-− log p(xT ) −
-X
-t>1
-log
-pθ(xt−1|xt)
-q(xt−1|xt, x0) · q(xt−1|x0)
-q(xt|x0)
-− log pθ(x0|x1)
-q(x1|x0)
-#
-(20)
-= Eq
-"
-− log
-p(xT )
-q(xT |x0) −
-X
-t>1
-log
-pθ(xt−1|xt)
-q(xt−1|xt, x0) − log pθ(x0|x1)
-#
-(21)
-1
-= Eq
-"
-DKL(q(xT |x0) ∥ p(xT )) +
-X
-t>1
-DKL(q(xt−1|xt, x0) ∥ pθ(xt−1|xt)) − log pθ(x0|x1)
-#
-(22)
-The following is an alternate version of L. It is not tractable to estimate, but it is useful for our
-discussion in Section 4.3.
-L = Eq
-
-− log p(xT ) −
-X
-t≥1
-log pθ(xt−1|xt)
-q(xt|xt−1)
-
-
-(23)
-= Eq
-
-− log p(xT ) −
-X
-t≥1
-log pθ(xt−1|xt)
-q(xt−1|xt) · q(xt−1)
-q(xt)
-
-
-(24)
-= Eq
-
-− log p(xT )
-q(xT ) −
-X
-t≥1
-log pθ(xt−1|xt)
-q(xt−1|xt) − log q(x0)
-
-
-(25)
-= DKL(q(xT ) ∥ p(xT )) + Eq
-
-X
-t≥1
-DKL(q(xt−1|xt) ∥ pθ(xt−1|xt))
-
- + H(x0)
-(26)
-B
-Experimental details
-Our neural network architecture follows the backbone of PixelCNN++ [52], which is a U-Net [48]
-based on a Wide ResNet [72]. We replaced weight normalization [49] with group normalization [66]
-to make the implementation simpler. Our 32 × 32 models use four feature map resolutions (32 × 32
-to 4 × 4), and our 256 × 256 models use six. All models have two convolutional residual blocks
-per resolution level and self-attention blocks at the 16 × 16 resolution between the convolutional
-blocks [6]. Diffusion time t is speciﬁed by adding the Transformer sinusoidal position embedding [60]
-into each residual block. Our CIFAR10 model has 35.7 million parameters, and our LSUN and
-CelebA-HQ models have 114 million parameters. We also trained a larger variant of the LSUN
-Bedroom model with approximately 256 million parameters by increasing ﬁlter count.
-We used TPU v3-8 (similar to 8 V100 GPUs) for all experiments. Our CIFAR model trains at 21
-steps per second at batch size 128 (10.6 hours to train to completion at 800k steps), and sampling
-a batch of 256 images takes 17 seconds. Our CelebA-HQ/LSUN (2562) models train at 2.2 steps
-per second at batch size 64, and sampling a batch of 128 images takes 300 seconds. We trained on
-CelebA-HQ for 0.5M steps, LSUN Bedroom for 2.4M steps, LSUN Cat for 1.8M steps, and LSUN
-Church for 1.2M steps. The larger LSUN Bedroom model was trained for 1.15M steps.
-Apart from an initial choice of hyperparameters early on to make network size ﬁt within memory
-constraints, we performed the majority of our hyperparameter search to optimize for CIFAR10 sample
-quality, then transferred the resulting settings over to the other datasets:
-• We chose the βt schedule from a set of constant, linear, and quadratic schedules, all
-constrained so that LT ≈ 0. We set T = 1000 without a sweep, and we chose a linear
-schedule from β1 = 10−4 to βT = 0.02.
-• We set the dropout rate on CIFAR10 to 0.1 by sweeping over the values {0.1, 0.2, 0.3, 0.4}.
-Without dropout on CIFAR10, we obtained poorer samples reminiscent of the overﬁtting
-artifacts in an unregularized PixelCNN++ [52]. We set dropout rate on the other datasets to
-zero without sweeping.
-• We used random horizontal ﬂips during training for CIFAR10; we tried training both with
-and without ﬂips, and found ﬂips to improve sample quality slightly. We also used random
-horizontal ﬂips for all other datasets except LSUN Bedroom.
-• We tried Adam [31] and RMSProp early on in our experimentation process and chose the
-former. We left the hyperparameters to their standard values. We set the learning rate to
-2 × 10−4 without any sweeping, and we lowered it to 2 × 10−5 for the 256 × 256 images,
-which seemed unstable to train with the larger learning rate.
-1
-• We set the batch size to 128 for CIFAR10 and 64 for larger images. We did not sweep over
-these values.
-• We used EMA on model parameters with a decay factor of 0.9999. We did not sweep over
-this value.
-Final experiments were trained once and evaluated throughout training for sample quality. Sample
-quality scores and log likelihood are reported on the minimum FID value over the course of training.
-On CIFAR10, we calculated Inception and FID scores on 50000 samples using the original code
-from the OpenAI [51] and TTUR [21] repositories, respectively. On LSUN, we calculated FID
-scores on 50000 samples using code from the StyleGAN2 [30] repository. CIFAR10 and CelebA-HQ
-were loaded as provided by TensorFlow Datasets (https://www.tensorflow.org/datasets),
-and LSUN was prepared using code from StyleGAN. Dataset splits (or lack thereof) are standard
-from the papers that introduced their usage in a generative modeling context. All details can be found
-in the source code release.
-C
-Discussion on related work
-Our model architecture, forward process deﬁnition, and prior differ from NCSN [55, 56] in subtle but
-important ways that improve sample quality, and, notably, we directly train our sampler as a latent
-variable model rather than adding it after training post-hoc. In greater detail:
-1. We use a U-Net with self-attention; NCSN uses a ReﬁneNet with dilated convolutions. We
-condition all layers on t by adding in the Transformer sinusoidal position embedding, rather
-than only in normalization layers (NCSNv1) or only at the output (v2).
-2. Diffusion models scale down the data with each forward process step (by a √1 − βt factor)
-so that variance does not grow when adding noise, thus providing consistently scaled inputs
-to the neural net reverse process. NCSN omits this scaling factor.
-3. Unlike NCSN, our forward process destroys signal (DKL(q(xT |x0) ∥ N(0, I)) ≈ 0), ensur-
-ing a close match between the prior and aggregate posterior of xT . Also unlike NCSN, our
-βt are very small, which ensures that the forward process is reversible by a Markov chain
-with conditional Gaussians. Both of these factors prevent distribution shift when sampling.
-4. Our Langevin-like sampler has coefﬁcients (learning rate, noise scale, etc.) derived rig-
-orously from βt in the forward process. Thus, our training procedure directly trains our
-sampler to match the data distribution after T steps: it trains the sampler as a latent variable
-model using variational inference. In contrast, NCSN’s sampler coefﬁcients are set by hand
-post-hoc, and their training procedure is not guaranteed to directly optimize a quality metric
-of their sampler.
-D
-Samples
-Additional samples
-Figure 11, 13, 16, 17, 18, and 19 show uncurated samples from the diffusion
-models trained on CelebA-HQ, CIFAR10 and LSUN datasets.
-Latent structure and reverse process stochasticity
-During sampling, both the prior xT ∼
-N(0, I) and Langevin dynamics are stochastic. To understand the signiﬁcance of the second source
-of noise, we sampled multiple images conditioned on the same intermediate latent for the CelebA
-256 × 256 dataset. Figure 7 shows multiple draws from the reverse process x0 ∼ pθ(x0|xt) that
-share the latent xt for t ∈ {1000, 750, 500, 250}. To accomplish this, we run a single reverse chain
-from an initial draw from the prior. At the intermediate timesteps, the chain is split to sample multiple
-images. When the chain is split after the prior draw at xT =1000, the samples differ signiﬁcantly.
-However, when the chain is split after more steps, samples share high-level attributes like gender,
-hair color, eyewear, saturation, pose and facial expression. This indicates that intermediate latents
-like x750 encode these attributes, despite their imperceptibility.
-Coarse-to-ﬁne interpolation
-Figure 9 shows interpolations between a pair of source CelebA
-256 × 256 images as we vary the number of diffusion steps prior to latent space interpolation.
-Increasing the number of diffusion steps destroys more structure in the source images, which the
-1
-model completes during the reverse process. This allows us to interpolate at both ﬁne granularities
-and coarse granularities. In the limiting case of 0 diffusion steps, the interpolation mixes source
-images in pixel space. On the other hand, after 1000 diffusion steps, source information is lost and
-interpolations are novel samples.
-Source Rec. λ=0.1 λ=0.2 λ=0.3 λ=0.4 λ=0.5 λ=0.6 λ=0.7 λ=0.8 λ=0.9
-Rec. Source
-1000 steps
-875 steps
-750 steps
-625 steps
-500 steps
-375 steps
-250 steps
-125 steps
-0 steps
-Figure 9: Coarse-to-ﬁne interpolations that vary the number of diffusion steps prior to latent mixing.
-0
-200
-400
-600
-800 1,000
+[13] Benoit Jacob, Skirmantas Kligys, Bo Chen, Menglong Zhu,
+Matthew Tang, Andrew G. Howard, Hartwig Adam, and
+Dmitry Kalenichenko. Quantization and training of neural
+networks for efficient integer-arithmetic-only inference. In
+CVPR, 2018.
+[14] Alexia Jolicoeur-Martineau, Ke Li, R´emi Pich´e-Taillefer,
+Tal Kachman, and Ioannis Mitliagkas. Gotta go fast when
+generating data with score-based models.
+arXiv preprint
+arXiv:2105.14080, 2021.
+[15] Zahra Kadkhodaie and Eero P Simoncelli. Solving linear
+inverse problems using the prior implicit in a denoiser. arXiv
+preprint arXiv:2007.13640, 2020.
+[16] Alex Krizhevsky, Geoffrey Hinton, et al. Learning multi-
+ple layers of features from tiny images. Toronto University,
+2009.
+[17] Yuhang Li, Ruihao Gong, Xu Tan, Yang Yang, Peng Hu, Qi
+Zhang, Fengwei Yu, Wei Wang, and Shi Gu. Brecq: Pushing
+the limit of post-training quantization by block reconstruc-
+tion. In ICLR, 2021.
+[18] Cheng Lu, Yuhao Zhou, Fan Bao, Jianfei Chen, Chongxuan
+Li, and Jun Zhu. Dpm-solver: A fast ode solver for diffusion
+probabilistic model sampling in around 10 steps. In NeurIPS,
+2022.
+[19] Eric Luhman and Troy Luhman. Knowledge distillation in
+iterative generative models for improved sampling speed.
+arXiv preprint arXiv:2101.02388, 2021.
+[20] Szymon Migacz. 8-bit inference with tensorrt. NVIDIA GPU
+Technology Conference, 2017.
+[21] Gautam Mittal, Jesse Engel, Curtis Hawthorne, and Ian Si-
+mon.
+Symbolic music generation with diffusion models.
+arXiv preprint arXiv:2103.16091, 2021.
+[22] Markus Nagel, Marios Fournarakis, Rana Ali Amjad, Yely-
+sei Bondarenko, Mart van Baalen, and Tijmen Blankevoort.
+A white paper on neural network quantization. CoRR, 2021.
+[23] Yury Nahshan, Brian Chmiel, Chaim Baskin, Evgenii
+Zheltonozhskii, Ron Banner, Alex M. Bronstein, and Avi
+Mendelson. Loss aware post-training quantization. Machine
+Learning, 2021.
+[24] Alexander Quinn Nichol and Prafulla Dhariwal. Improved
+denoising diffusion probabilistic models. In ICML, 2021.
+[25] Chenhao Niu, Yang Song, Jiaming Song, Shengjia Zhao,
+Aditya Grover, and Stefano Ermon. Permutation invariant
+graph generation via score-based generative modeling. In
+AISTAT, 2020.
+[26] Aditya Ramesh, Prafulla Dhariwal, Alex Nichol, Casey Chu,
+and Mark Chen. Hierarchical text-conditional image gen-
+eration with clip latents. arXiv preprint arXiv:2204.06125,
+2022.
+[27] Chitwan Saharia, William Chan, Saurabh Saxena, Lala
+Li, Jay Whang, Emily Denton, Seyed Kamyar Seyed
+Ghasemipour,
+Burcu Karagol Ayan,
+S Sara Mahdavi,
+Rapha Gontijo Lopes, et al.
+Photorealistic text-to-image
+diffusion models with deep language understanding. arXiv
+preprint arXiv:2205.11487, 2022.
+[28] Chitwan Saharia, Jonathan Ho, William Chan, Tim Sali-
+mans, David J Fleet, and Mohammad Norouzi. Image super-
+resolution via iterative refinement. TPAMI, 2022.
+[29] Robin San-Roman, Eliya Nachmani, and Lior Wolf. Noise
+estimation for generative diffusion models. arXiv preprint
+arXiv:2104.02600, 2021.
+[30] Hiroshi Sasaki, Chris G Willcocks, and Toby P Breckon.
+Unit-ddpm:
+Unpaired image translation with denois-
+ing
+diffusion
+probabilistic
+models.
+arXiv
+preprint
+arXiv:2104.05358, 2021.
+[31] Yuzhang Shang, Bin Duan, Ziliang Zong, Liqiang Nie, and
+Yan Yan. Lipschitz continuity guided knowledge distillation.
+In ICCV, 2021.
+[32] Yuzhang Shang, Dan Xu, Bin Duan, Ziliang Zong, Liqiang
+Nie, and Yan Yan. Lipschitz continuity retained binary neu-
+ral network. In ECCV, 2022.
+[33] Yuzhang Shang, Dan Xu, Ziliang Zong, Liqiang Nie, and
+Yan Yan. Network binarization via contrastive learning. In
+ECCV, 2022.
+[34] Sheng Shen, Zhen Dong, Jiayu Ye, Linjian Ma, Zhewei Yao,
+Amir Gholami, Michael W Mahoney, and Kurt Keutzer. Q-
+bert: Hessian based ultra low precision quantization of bert.
+In AAAI, 2020.
+[35] Uriel Singer, Adam Polyak, Thomas Hayes, Xi Yin, Jie An,
+Songyang Zhang, Qiyuan Hu, Harry Yang, Oron Ashual,
+Oran Gafni, et al. Make-a-video: Text-to-video generation
+without text-video data. arXiv preprint arXiv:2209.14792,
+2022.
+[36] Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan,
+and Surya Ganguli.
+Deep unsupervised learning using
+nonequilibrium thermodynamics. In ICML, 2015.
+[37] Jiaming Song, Chenlin Meng, and Stefano Ermon. Denois-
+ing diffusion implicit models. In ICLR, 2021.
+[38] Yang Song and Stefano Ermon. Generative modeling by es-
+timating gradients of the data distribution. In NeurIPS, 2019.
+[39] Yang Song and Stefano Ermon.
+Improved techniques for
+training score-based generative models. In NeurIPS, 2020.
+[40] Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Ab-
+hishek Kumar, Stefano Ermon, and Ben Poole. Score-based
+generative modeling through stochastic differential equa-
+tions. arXiv preprint arXiv:2011.13456, 2020.
+[41] Daniel Watson, Jonathan Ho, Mohammad Norouzi, and
+William Chan. Learning to efficiently sample from diffu-
+sion probabilistic models. arXiv preprint arXiv:2106.03802,
+2021.
+[42] Di Wu, Qi Tang, Yongle Zhao, Ming Zhang, Ying Fu, and
+Debing Zhang.
+Easyquant: Post-training quantization via
+scale optimization. arXiv preprint arXiv:2006.16669, 2020.
+[43] Ling Yang, Zhilong Zhang, Yang Song, Shenda Hong, Run-
+sheng Xu, Yue Zhao, Yingxia Shao, Wentao Zhang, Bin
+Cui, and Ming-Hsuan Yang. Diffusion models: A compre-
+hensive survey of methods and applications. arXiv preprint
+arXiv:2209.00796, 2022.
+[44] Zhihang Yuan, Chenhao Xue, Yiqi Chen, Qiang Wu, and
+Guangyu Sun.
+Ptq4vit: Post-training quantization for vi-
+sion transformers with twin uniform quantization. In ECCV,
+2022.
+[45] Yunshan Zhong, Mingbao Lin, Gongrui Nan, Jianzhuang
+Liu, Baochang Zhang, Yonghong Tian, and Rongrong Ji. In-
+traq: Learning synthetic images with intra-class heterogene-
+ity for zero-shot network quantization. In CVPR, 2022.
+###
+6. Appendix
+###
+6.1. Nonuniform Distribution Selection
+Notably, we have carefully chosen the nonuniform distri-
+bution for sampling timestep t (Eq. 15). Specifically, except
+for the normal distribution in the paper, we also consider the
+Poisson and exponential distributions. Also, a series of hy-
+perparameter selection experiments are conducted. More
+details are presented in Tab. 6.
+Table 6. Hyperparameter selection for non-uniform distribution in
+Algorithm 1.
+Task
+Method
+IS ↑
+FID ↓
+sFID ↓
+FP
+14.88
+21.63
+17.66
+Other Nonuniform
+Poisson
+13.29
+34.54
+25.84
+Distributions
+Exponential
+12.87
+39.91
+30.04
+µ = T
+2 , σ = 0.5
+q
+T
 2
-4
-6
-8
-10
-Reverse process steps (T − t)
-Inception Score
-0
-200
-400
-600
-800 1,000
-0
-100
-200
-300
-Reverse process steps (T − t)
-FID
-Figure 10: Unconditional CIFAR10 progressive sampling quality over time
+15.45
+25.11
+17.35
+Normal Distribution
+µ = T
+2 , σ = 1.0
+q
+T
+2
+15.65
+24.83
+18.90
+with Different
+µ = T
+2 , σ = 2.0
+q
+T
+2
+15.85
+24.27
+17.92
+Mean µ,
+µ = 1.5T
+2 , σ =
+q
+T
+2
+12.63
+39.09
+35.81
+and Variance σ
+µ = 1.0T
+2 , σ =
+q
+T
+2
+15.65
+24.83
+18.90
+µ = 0.5T
+2 , σ =
+q
+T
+2
+15.88
+23.96
+17.67
+###
+6.2. Actual Acceleration
+We test the latency(ms) of the original network (pro-
+vided checkpoint) and the quantized network on Nvidia
+RTX A6000 GPU. The results in Table 7 show that the 8-bit
+quantization achieves about 2x speedup. The speedup can
+be more significant on NPU.
+Table 7. Inference speed test with Nvidia RTX A6000.
+Task
+Batch Size
+FP32
+INT8
+ImageNet
+64x64
 1
-Figure 11: CelebA-HQ 256 × 256 generated samples
+9.80
+4.99
+16
+64.42
+28.16
+CIFAR
+32x32
 1
-(a) Pixel space nearest neighbors
-(b) Inception feature space nearest neighbors
-Figure 12: CelebA-HQ 256 × 256 nearest neighbors, computed on a 100 × 100 crop surrounding the
-faces. Generated samples are in the leftmost column, and training set nearest neighbors are in the
-remaining columns.
-1
-Figure 13: Unconditional CIFAR10 generated samples
-1
-Figure 14: Unconditional CIFAR10 progressive generation
-2
-(a) Pixel space nearest neighbors
-(b) Inception feature space nearest neighbors
-Figure 15: Unconditional CIFAR10 nearest neighbors. Generated samples are in the leftmost column,
-and training set nearest neighbors are in the remaining columns.
-2
-Figure 16: LSUN Church generated samples. FID=7.89
-2
-Figure 17: LSUN Bedroom generated samples, large model. FID=4.90
-2
-Figure 18: LSUN Bedroom generated samples, small model. FID=6.36
-2
-Figure 19: LSUN Cat generated samples. FID=19.75
-2
+5.92
+2.98
+16
+23.15
+14.1

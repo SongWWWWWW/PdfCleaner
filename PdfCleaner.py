@@ -330,6 +330,9 @@ class PaperCleaner:
                 table_position_end += len(line) + 1
             else:
                 # 找end，从第一个
+                if line == "###":
+                    self.logger.warning(f"发现###，切除部分终止，后面是{lines[index+1]}")
+                    break
                 if len(line) >= self.RECOGNIZE_SENTENCE_LEN and not self.design_table_content(line):
                     if self.debug:
                         # print("ok了，准备撤退")
@@ -874,7 +877,7 @@ def find_matches(text:str) -> int:
     print("="*100)
 if __name__ == "__main__": 
 
-    files = PaperCleaner("./4.pdf")
+    files = PaperCleaner("./5.pdf")
     # files.search_title()
     # tree = TitleTree(value=[1])
     # tree1 = TitleTree(value=[1,1],parent=tree)
