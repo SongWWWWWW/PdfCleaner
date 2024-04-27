@@ -30,6 +30,13 @@ class PaperCleaner:
         self.title_pattern = None # 用于确定title的模式
         self.title_tree = TitleTree(value=[])
         self.read()
+        self.search_title()
+        if self.title_pattern == 1:
+            self.title_pattern_1()
+        elif self.title_pattern == 2:
+            self.title_pattern_2()
+        else:
+            self.logger.error("未找到title_pattern")
         self.find_matches()
         self.clean_table_context()
     def read(self) -> None:
@@ -500,12 +507,13 @@ class PaperCleaner:
         # 只有英文和空格,-,()，True
         log = 0
         for i in text:
-            if i>='a' and i<='z' or i>='A' and i <='Z' or i==' ' or i == '-' or i == '(' or i == ')' or self.is_num(i):
+            if i>='a' and i<='z' or i>='A' and i <='Z' or i==' ' or i == '-' or i == '(' or i == ')' or self.is_num(i) or \
+                i == ":" or i=="−" or i==',':
                 log += 1
-            else:
+            # else:
                 # self.logger.error(f"{text} 在 {i} 处没通过")
-                return False
-        if log >= 5:
+                # return False
+        if log >= 5 or log/len(text) > 0.8 :
             return True
         return False
     def search_title(self):
@@ -526,7 +534,7 @@ class PaperCleaner:
         # 判断逻辑，每行第一个是数字，根据标题树，判断属于兄弟节点还是父兄弟节点递归往上判断，或者给一个队列，把现在和下一个大标题的数字放进来
         # 俩都进行判断， 然后匹配以后之后插入树节点，在第一个空格之后逐个元素判断，只能是英文字母或者空格，匹配的话，记录下来，然后打上标记（放到一行），在进行删除表格操作的时候判断标题
         # design
-        for index_text,text in enumerate(self.cleaned_text):
+        for index_text,text in enumerate(self.text):
             texts = text.split("\n")
             if self.title_pattern is not None:
                 break
@@ -535,16 +543,16 @@ class PaperCleaner:
                     if self.is_num(i[0]):
                         self.title_pattern = 1 # 1. Introduction
                         # self.title_tree = TitleTree(value=[])
-                        self.title_tree.sons = [TitleTree(value=["1"],parent=self.title_tree)]
-                        self.title_tree = self.title_tree.sons[0]
+                        # self.title_tree.sons = [TitleTree(value=["1"],parent=self.title_tree)]
+                        # self.title_tree = self.title_tree.sons[0]
                         self.logger.info(f"paper标题模式确认，{i}")
                         break
                     elif self.is_num(texts[index_i-1][0]):
-                        self.title_pattern = 0
+                        self.title_pattern = 2
                         # 1
                         # Introduction
-                        self.title_tree.sons = [TitleTree(value=["1"],parent=self.title_tree)]
-                        self.title_tree = self.title_tree.sons[0]
+                        # self.title_tree.sons = [TitleTree(value=["1"],parent=self.title_tree)]
+                        # self.title_tree = self.title_tree.sons[0]
                         self.logger.info(f"paper标题模型确认，\n{texts[index_i-1]}\n{i}")
                         break
         if self.title_pattern is None:
@@ -581,13 +589,20 @@ class PaperCleaner:
         # 匹配模式为 1. Introduction
         # 从self.text中进行标记
         queue = []
-        log = 1
+        log_title = 0
+        log_abstract = 0
         # 遍历每页
         for index,texts in enumerate(self.text):
             texts = texts.split("\n")
             self.text[index] = ""
             # 遍历每行
             for text in texts:
+                if log_abstract == 0 and text == "Abstract":
+                    self.text[index] += "#"*3 + "\n" + text + '\n'
+                    self.logger.success(f"成功找到标题：{text}")
+                    log_abstract = 1
+                    log_title = 1
+                    continue
                 if text == "\n":
                     continue
                 if queue == []:
@@ -597,8 +612,8 @@ class PaperCleaner:
                     lis_to_str = self.list_to_str(lis)
                     if lis_to_str in text:
                         if self.design_en_or_space_1(text.strip(".")):
-                            self.text[index] += "#"*3 + text + "\n"
-                            log = 1
+                            self.text[index] += "#"*3 + "\n" + text + "\n"
+                            log_title = 1
                             queue = []
                             self.logger.success(f"成功找到标题：{text}")
                             if i == 0:
@@ -631,16 +646,17 @@ class PaperCleaner:
                                 self.title_tree.parent.parent.sons.append(TitleTree(value=_list,parent=self.title_tree.parent.parent.parent))
                                 self.title_tree = self.title_tree.parent.parent.parent.sons[-1]
                             break
-                if log==0:
+                if log_title==0:
                     self.text[index] += text + "\n"
                 else:
-                    log = 0
+                    log_title = 0
 
     def title_pattern_2(self):
             # 匹配模式为 1. Introduction
             # 从self.text中进行标记
             queue = []
-            log = 1
+            log_title = 0
+            log_abstract = 0
             count = 0
             # 遍历每页
             for index,texts in enumerate(self.text):
@@ -648,6 +664,12 @@ class PaperCleaner:
                 self.text[index] = ""
                 # 遍历每行
                 for index_1,text in enumerate(texts):
+                    if log_abstract == 0 and text == "Abstract":
+                        self.text[index] += "#"*3 + "\n" + text + "\n"
+                        self.logger.success(f"成功找到标题：{text}")
+                        log_abstract = 1
+                        log_title = 1
+                        continue
                     if text == "\n":
                         continue
                     if queue == []:
@@ -657,45 +679,48 @@ class PaperCleaner:
                         lis_to_str = self.list_to_str(lis)
 
                         if lis_to_str ==  text:
-                            if self.design_en_or_space_2(texts[index_1+1].strip(".")):
-                                self.text[index] += "#"*3 + text + " "
-                                log = 1
-                                queue = []
-                                self.logger.success(f"成功找到标题：{text} {texts[index_1+1]}")
-                                if i == 0:
-                                    # self.logger.info("i==0")
-                                    if self.title_tree.value == []:
-                                        self.title_tree.sons = [TitleTree(value=[1],parent=self.title_tree)]
-                                    else:
-                                        _list = self.title_tree.value.copy()
-                                        _list.append(1)
-                                        self.title_tree.sons = [TitleTree(value=_list,parent=self.title_tree)]
-                                    self.title_tree = self.title_tree.sons[0]
-                                    # self.logger.info(f"end {self.title_tree.value}")
+                            if index_1 != len(texts)-1: 
+                                if self.design_en_or_space_2(texts[index_1+1].strip(".")):
+                                    self.text[index] += "#"*3 + "\n" + text + " "
+                                    log_title = 1
+                                    queue = []
+                                    self.logger.success(f"成功找到标题：{text} {texts[index_1+1]}")
+                                    if i == 0:
+                                        # self.logger.info("i==0")
+                                        if self.title_tree.value == []:
+                                            self.title_tree.sons = [TitleTree(value=[1],parent=self.title_tree)]
+                                        else:
+                                            _list = self.title_tree.value.copy()
+                                            _list.append(1)
+                                            self.title_tree.sons = [TitleTree(value=_list,parent=self.title_tree)]
+                                        self.title_tree = self.title_tree.sons[0]
+                                        # self.logger.info(f"end {self.title_tree.value}")
 
-                                elif i == 1:
-                                    # self.logger.info("i=1")
-                                    _list = self.title_tree.value.copy()
-                                    _list[-1] += 1
-                                    self.title_tree.parent.sons.append(TitleTree(value=_list,parent=self.title_tree.parent))
-                                    self.title_tree = self.title_tree.parent.sons[-1]
-                                elif i == 2:
-                                    # self.logger.info("i=2")
-                                    _list = self.title_tree.parent.value.copy()
-                                    _list[-1] += 1
-                                    self.title_tree.parent.parent.sons.append(TitleTree(value=_list,parent=self.title_tree.parent.parent))
-                                    self.title_tree = self.title_tree.parent.parent.sons[-1]
-                                elif i == 3:
-                                    # self.logger.info("i=3")
-                                    _list = self.title_tree.parent.parent.value.copy()
-                                    _list[-1] += 1
-                                    self.title_tree.parent.parent.sons.append(TitleTree(value=_list,parent=self.title_tree.parent.parent.parent))
-                                    self.title_tree = self.title_tree.parent.parent.parent.sons[-1]
-                                break
-                    if log==0:
+                                    elif i == 1:
+                                        # self.logger.info("i=1")
+                                        _list = self.title_tree.value.copy()
+                                        _list[-1] += 1
+                                        self.title_tree.parent.sons.append(TitleTree(value=_list,parent=self.title_tree.parent))
+                                        self.title_tree = self.title_tree.parent.sons[-1]
+                                    elif i == 2:
+                                        # self.logger.info("i=2")
+                                        _list = self.title_tree.parent.value.copy()
+                                        _list[-1] += 1
+                                        self.title_tree.parent.parent.sons.append(TitleTree(value=_list,parent=self.title_tree.parent.parent))
+                                        self.title_tree = self.title_tree.parent.parent.sons[-1]
+                                    elif i == 3:
+                                        # self.logger.info("i=3")
+                                        _list = self.title_tree.parent.parent.value.copy()
+                                        _list[-1] += 1
+                                        self.title_tree.parent.parent.sons.append(TitleTree(value=_list,parent=self.title_tree.parent.parent.parent))
+                                        self.title_tree = self.title_tree.parent.parent.parent.sons[-1]
+                                    break
+                            else:
+                                self.logger.warning(f"{text} ，达到了{index+1}页的末尾")
+                    if log_title==0:
                         self.text[index] += text + "\n"
                     else:
-                        log = 0
+                        log_title = 0
                     
 
             
@@ -849,13 +874,13 @@ def find_matches(text:str) -> int:
     print("="*100)
 if __name__ == "__main__": 
 
-    files = PaperCleaner("./2.pdf")
+    files = PaperCleaner("./4.pdf")
     # files.search_title()
     # tree = TitleTree(value=[1])
     # tree1 = TitleTree(value=[1,1],parent=tree)
     # tree2 = TitleTree(value=[1,1,1],parent=tree1)
     # files.title_queue(tree2)
-    files.title_pattern_2()
+    # files.title_pattern_1()
     with open("log.txt",'w') as f:
         for text in files.text:
             # print(text)
